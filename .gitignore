@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+# recorded snapshots + meta cache live in ~/.mkt (outside the repo), never commit data
+data/
+.mkt/

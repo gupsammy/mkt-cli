@@ -1,0 +1,10 @@
+{
+  "name": "mkt",
+  "version": "0.1.0",
+  "description": "Agent-first CLI to extract TradingView market + macro data (snapshots + history) as JSON.",
+  "type": "module",
+  "bin": { "mkt": "bin/mkt.js" },
+  "scripts": { "start": "node bin/mkt.js" },
+  "dependencies": { "ws": "^8.18.0" },
+  "license": "MIT"
+}
