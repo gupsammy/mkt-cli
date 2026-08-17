@@ -3,43 +3,109 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
-      pull-requests: read
-      issues: read
+      pull-requests: write # posts inline comments + one summary comment
       id-token: write
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
+
+      - name: Install Claude Code
+        run: mkdir -p ~/.local/bin && npm install -g @anthropic-ai/claude-code
 
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          track_progress: true
+          prompt: |
+            You are reviewing a pull request for `mkt`, an agent-first Node ESM CLI that extracts
+            TradingView market + macro data as JSON. Runtime deps are only `ws` and `better-sqlite3`.
 
+            ## Phase 1 — Context Discovery
+            1. Read `package.json` and `CLAUDE.md` (the project's authoritative design doc).
+            2. Run `gh pr diff` for the full diff; categorize changed files:
+               - `bin/mkt.js`      — arg parser + command registry + help text
+               - `src/commands/*`  — one file per CLI subcommand
+               - `src/providers/tradingview.js` — the ONLY place undocumented TradingView wire
+                 formats are allowed to live (scanner REST + history WebSocket)
+               - `src/db.js`, `src/schema.js` — SQLite panel schema and the WIDE field list
+               - `src/output.js`   — the stdout/stderr + exit-code contract
+               - docs / CI / config
+
+            ## Phase 2 — Change Comprehension
+            State the PR's intent in one sentence. Read the surrounding code, not just the diff
+            hunks — this codebase is deliberately terse and dense, and a hunk read in isolation
+            will look wrong when it is idiomatic here. Identify the existing pattern the change
+            should be following before judging it.
+
+            ## Phase 3 — Deep Analysis
+
+            **Correctness & logic** — off-by-ones, null/undefined from upstream JSON (the scanner
+            returns `null`, never an error, for unknown columns), timezone handling (`src/tzdate.js`
+            uses exchange trading dates, NOT naive UTC — a UTC date here is a bug), idempotency of
+            `record`/`ingest` upserts.
+
+            **Contract integrity** (highest-value dimension for this repo):
+            - Exit codes must come from `EXIT`/`CODE_TO_EXIT` in `src/output.js` and be thrown as
+              `MktError(code, message, hint)`. A raw `throw new Error` or a bare `process.exit(1)`
+              breaks the agent-facing contract. `hint` should be a runnable command.
+            - Data goes to stdout, diagnostics/errors to stderr — never mixed.
+            - New commands must print via `printRows`/`printObject`, not `console.log`.
+            - Any new value-taking flag MUST be added to `VALUE_FLAGS` in `bin/mkt.js`, and any
+              repeatable flag to `REPEATABLE`. This registry is manual and silently mis-parses the
+              flag if missed — check it explicitly on every PR that adds a flag.
+            - New fields belong in `schema.js` `WIDE` only; recorder and DB derive from it. A field
+              added to one side but not `WIDE` is schema drift.
+
+            **Security & data safety**:
+            - `mkt sql` must stay on a read-only connection; verify no path opens it writable.
+            - `src/notify.js` shells out via `execFile` — check that secrets (`MKT_TG_TOKEN`,
+              `MKT_NTFY_TOPIC`) never land in argv positions that get echoed to stderr on failure,
+              and that user/symbol data can't inject arguments.
+            - SQL built by string concatenation anywhere outside `mkt sql`'s pass-through: flag it.
+            - File paths under `~/.mkt/` — check for traversal via user-supplied region/date.
+            - Destructive operations (`ingest --prune`) must keep their verified round-trip guard.
+
+            **Error handling** — no silently swallowed upstream failures; `history()` retries 3x on
+            upstream errors but must NEVER retry `not_found`. Notification sinks are best-effort and
+            must not throw.
+
+            **Performance** — `better-sqlite3` writes belong in a transaction; prepared statements
+            should be hoisted out of loops; scanner calls should not be issued per-symbol in a loop
+            when one `symbols.tickers` batch would do.
+
+            **Documentation** — `CLAUDE.md` and the `help` text in `bin/mkt.js` are part of the
+            product surface. A new command or flag that isn't reflected in both is incomplete.
+
+            **Maintainability** — flag over-engineering, speculative abstraction, dead code, and
+            error handling for cases that cannot occur (this project explicitly validates only at
+            system boundaries).
+
+            **Do NOT flag**: formatting, line length, or the dense one-line-function style — that is
+            intentional. There is no test suite and no linter; do not demand tests, but DO flag logic
+            that is impossible to verify by inspection.
+
+            ## Phase 4 — Output
+            Post inline comments on specific lines, each prefixed with a severity:
+            - 🔴 Must fix — bugs, contract violations, security or data-loss risks
+            - 🟡 Should fix — error-handling gaps, performance problems, API design concerns
+            - 🟢 Suggestion — alternative approach, minor optimization, readability win
+            - ❓ Question — intent unclear, design choice worth discussing
+
+            Then post ONE top-level summary comment: a one-sentence PR summary, an overall
+            assessment, findings grouped by severity, and a genuine callout for anything done well.
+            If you find no issues, say so plainly — do not manufacture feedback.
+          claude_args: |
+            --model opus
+            --allowedTools "Read,Glob,Grep,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),mcp__github_inline_comment__create_inline_comment"
