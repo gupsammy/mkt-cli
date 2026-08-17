@@ -1,12 +1,22 @@
 import { scan, fieldSet } from '../providers/tradingview.js';
 import { parseWhere, validateColumns } from '../filter.js';
+import { openDb } from '../db.js';
+import { watchlistSymbols } from './watchlist.js';
 import { printRows } from '../output.js';
 
 export default async function screen({ flags }) {
   const region = flags.region || 'america';
   const columns = (flags.columns || 'name,close,change,volume').split(',').map((s) => s.trim());
-  const limit = Math.min(parseInt(flags.limit || '50', 10), 500);
   const wheres = flags.where || [];
+
+  // --watchlist scopes the screen to a hand-picked set (spec §1: monitoring vs discovery).
+  let symbols;
+  if (flags.watchlist) {
+    const db = openDb({ readonly: true });
+    try { symbols = watchlistSymbols(db, flags.watchlist); } finally { db.close(); }
+    if (!symbols.length) { if (!flags.quiet) process.stderr.write(`# watchlist "${flags.watchlist}" empty\n`); printRows([], flags); return 0; }
+  }
+  const limit = Math.min(parseInt(flags.limit || '50', 10), symbols ? symbols.length : 500);
 
   const fs = await fieldSet(region);
   const { filter, cols } = parseWhere(wheres, fs);
@@ -31,7 +41,8 @@ export default async function screen({ flags }) {
   }
   validateColumns(new Set([...columns, ...cols]), fs);   // D2: reject typos before the scan
 
-  const { total, rows } = await scan({ region, columns, filter, sort, range: [0, limit] });
+  const range = [0, symbols ? symbols.length : limit];
+  const { total, rows } = await scan({ region, columns, filter, sort, range, symbols });
   const out = rows.map((r) => ({ symbol: r.s, ...Object.fromEntries(columns.map((c, i) => [c, r.d[i]])) }));
 
   if (!flags.quiet) process.stderr.write(`# matches=${total} returned=${out.length} has_more=${total > out.length}\n`);

@@ -1,10 +1,21 @@
 import { execFile } from 'node:child_process';
 
-// Push a notification to both sinks (spec §12): ntfy.sh (phone/desktop, if a topic is configured)
-// and a native macOS banner (always). Best-effort — a sink failure is logged to stderr, never throws,
-// so one dead sink can't abort an alert run.
+// Push to every configured sink (spec §6): Telegram (push + searchable history + two-way, if a bot
+// token/chat is set), ntfy.sh (if a topic is set), and a native macOS banner (always). Best-effort —
+// a sink failure is logged to stderr, never throws, so one dead sink can't abort an alert run.
 export async function notify(title, body) {
-  await Promise.all([ntfy(title, body), macBanner(title, body)]);
+  await Promise.all([telegram(title, body), ntfy(title, body), macBanner(title, body)]);
+}
+
+// Telegram Bot API sendMessage. Setup: message @BotFather → /newbot → token; message your bot once,
+// then read the chat id. Set MKT_TG_TOKEN + MKT_TG_CHAT. The chat log IS the searchable history.
+function telegram(title, body) {
+  const token = process.env.MKT_TG_TOKEN, chat = process.env.MKT_TG_CHAT;
+  if (!token || !chat) return Promise.resolve();   // silent — Telegram is opt-in
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  return run('curl', ['-fsS', '-G', url, '--data-urlencode', `chat_id=${chat}`,
+    '--data-urlencode', `text=${title}\n${body}`]).catch((e) =>
+    process.stderr.write(`# telegram failed: ${e.message}\n`));
 }
 
 function ntfy(title, body) {

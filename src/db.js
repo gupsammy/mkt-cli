@@ -60,6 +60,16 @@ function migrate(db) {
     alert_id INTEGER NOT NULL, symbol TEXT NOT NULL, first_seen TEXT NOT NULL,
     PRIMARY KEY (alert_id, symbol),
     FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE);`);
+
+  // Watchlists (spec §1): hand-populated sets of symbols. A screen/alert can scope to one instead of
+  // a whole region. kind: 'equity' (scanner-visible) or 'macro' (quote/history-scoped).
+  db.exec(`CREATE TABLE IF NOT EXISTS watchlists (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL DEFAULT 'equity',
+    created TEXT NOT NULL);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS watchlist_members (
+    watchlist_id INTEGER NOT NULL, symbol TEXT NOT NULL, added TEXT NOT NULL,
+    PRIMARY KEY (watchlist_id, symbol),
+    FOREIGN KEY (watchlist_id) REFERENCES watchlists(id) ON DELETE CASCADE);`);
 }
 
 // Prepared upsert over (date, symbol, ...WIDE). INSERT OR REPLACE keyed on the PK → re-ingesting

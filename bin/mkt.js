@@ -16,12 +16,15 @@ import record from '../src/commands/record.js';
 import ingest from '../src/commands/ingest.js';
 import sql from '../src/commands/sql.js';
 import alert from '../src/commands/alert.js';
+import size from '../src/commands/size.js';
+import watchlist from '../src/commands/watchlist.js';
 
-const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql, alert };
+const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql, alert, size, watchlist };
 const VERSION = '0.1.0';
 
 // Flags that consume the next token as a value; everything else is boolean. --where repeats.
-const VALUE_FLAGS = new Set(['region', 'columns', 'sort', 'limit', 'tf', 'bars', 'category', 'search', 'type', 'out', 'sql', 'kind']);
+const VALUE_FLAGS = new Set(['region', 'columns', 'sort', 'limit', 'tf', 'bars', 'category', 'search', 'type', 'out', 'sql', 'kind',
+  'entry', 'stop', 'account', 'risk', 'max-pct', 'target', 'watchlist']);
 const REPEATABLE = new Set(['where']);
 
 function parse(argv) {
@@ -60,6 +63,9 @@ COMMANDS
   sql       Query the panel:     mkt sql "SELECT symbol,RSI FROM snapshots WHERE RSI<30"
   alert     Edge-triggered alerts: add <name> --where '<expr>' (live) | --sql "<SELECT>" (panel)
             list · rm <name> · test <name> · check [--kind live|panel] [--dry-run]
+  size      Risk-first sizing:   mkt size --entry 50 --stop 47 [--account 6000] [--risk 1] [--target 56]
+  watchlist Hand-picked sets:    add <name> · put <name> SYM… · rm <name> [SYM…] · list [<name>]
+            scope a screen to one: mkt screen --watchlist my-semis --where 'RSI<40'
 
 GLOBAL  --json (NDJSON lists) · --compact · -q/--quiet · -v/--verbose · --no-color · --version
 FILTER  RSI < 30 · close > SMA200 (col-vs-col) · RSI between 55,72 · typespecs has common · RSI|60 < 30 (intraday)

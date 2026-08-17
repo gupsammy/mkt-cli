@@ -88,9 +88,19 @@ only tv's MCP registration + skill wrapper, not the CLI.
   mkt alert list | test <name> | rm <name> | check [--kind live|panel] [--dry-run]
   ```
   Scheduling: live → `com.user.mkt-alert.plist` (15m, `~/scripts/mkt-alert.sh` self-gates to
-  09:30–16:15 ET); panel → appended to `mkt-record.sh` after ingest. **Set `MKT_NTFY_TOPIC` in the
-  plist's EnvironmentVariables to enable phone push** (launchd doesn't inherit the shell env).
-  Per-symbol thresholds + Telegram sink still deferred.
+  09:30–16:15 ET); panel → appended to `mkt-record.sh` after ingest. Sinks (`src/notify.js`, best-effort):
+  Telegram (`MKT_TG_TOKEN`+`MKT_TG_CHAT`, preferred — push + searchable history), ntfy (`MKT_NTFY_TOPIC`),
+  macOS banner. **Set the env in the plist's EnvironmentVariables** (launchd doesn't inherit the shell).
+
+## Trade-support (v1 — spec `../trading-experiments/docs/mkt-screens-spec.md`)
+This is a swing system (daily bars, 15m delay irrelevant), EOD-first, human-in-the-loop: the CLI
+signals, YOU trade + report fills, the CLI logs/tracks. Built so far:
+- `mkt size --entry E --stop S [--account 6000] [--risk 1] [--max-pct 25] [--target T]` — risk-first
+  sizing (you fix max loss; stop distance sets shares). Caps position at max-pct of account.
+- `mkt watchlist add|put|rm|list` — hand-picked symbol sets (`watchlists`/`watchlist_members` tables).
+  Scope a screen to one: `mkt screen --watchlist my-semis --where 'RSI<40'` (monitoring vs discovery).
+Full vision (staged strategies, trade journal, strategy eval, exit/portfolio risk) documented in the
+screens spec §7–§13; back half is v2+.
 
 The SQLite query layer (Phase 2) is **built** — see "The recorder + DB" above. Deps are now
 `ws` + `better-sqlite3`.
