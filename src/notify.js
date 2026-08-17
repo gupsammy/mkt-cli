@@ -20,10 +20,7 @@ function telegram(title, body) {
 
 function ntfy(title, body) {
   const topic = process.env.MKT_NTFY_TOPIC;
-  if (!topic) {
-    process.stderr.write('# ntfy skipped (set MKT_NTFY_TOPIC to enable phone push)\n');
-    return Promise.resolve();
-  }
+  if (!topic) return Promise.resolve();   // silent opt-in fallback (Telegram is the primary sink)
   const url = `https://ntfy.sh/${topic}`;
   return run('curl', ['-fsS', '-H', `Title: ${title}`, '-d', body, url]).catch((e) =>
     process.stderr.write(`# ntfy failed: ${e.message}\n`));
