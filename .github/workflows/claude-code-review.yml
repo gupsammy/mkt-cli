@@ -7,7 +7,7 @@ on:
 jobs:
   claude-review:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25 # a 4-phase Opus review on a large diff can exceed 15m
     permissions:
       contents: read
       pull-requests: write # posts inline comments + one summary comment
