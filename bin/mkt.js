@@ -18,13 +18,14 @@ import sql from '../src/commands/sql.js';
 import alert from '../src/commands/alert.js';
 import size from '../src/commands/size.js';
 import watchlist from '../src/commands/watchlist.js';
+import backup from '../src/commands/backup.js';
 
-const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql, alert, size, watchlist };
+const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql, alert, size, watchlist, backup };
 const VERSION = '0.1.0';
 
 // Flags that consume the next token as a value; everything else is boolean. --where repeats.
 const VALUE_FLAGS = new Set(['region', 'columns', 'sort', 'limit', 'tf', 'bars', 'category', 'search', 'type', 'out', 'sql', 'kind',
-  'entry', 'stop', 'account', 'risk', 'max-pct', 'target', 'watchlist']);
+  'entry', 'stop', 'account', 'risk', 'max-pct', 'target', 'watchlist', 'to']);
 const REPEATABLE = new Set(['where']);
 
 function parse(argv) {
@@ -60,6 +61,7 @@ COMMANDS
   regions   List universes:     mkt regions
   record    Append daily snapshot to ~/.mkt/snapshots/<region>/<date>.ndjson.gz
   ingest    Load snapshots into ~/.mkt/mkt.db (SQLite); --prune drops gz >30d after verify
+  backup    Mirror gz archive + a consistent DB dump to durable storage (default iCloud) [--to DIR]
   sql       Query the panel:     mkt sql "SELECT symbol,RSI FROM snapshots WHERE RSI<30"
   alert     Edge-triggered alerts: add <name> --where '<expr>' (live) | --sql "<SELECT>" (panel)
             list · rm <name> · test <name> · check [--kind live|panel] [--dry-run]

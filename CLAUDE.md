@@ -48,12 +48,18 @@ on-demand via `mkt history` (bars are recoverable from the WS any time, so cachi
 not durability; not worth it — see spec §9b). Each daily snapshot already *is* a daily bar + ~200
 features, so daily-resolution temporal analysis is a `snapshots` self-join, no bars needed.
 
-Retention: gz is a **30-day recovery buffer**, the DB is source of truth. `mkt ingest --prune` drops
-gz >30d, but only after a verified round-trip (DB row count for that date == file line count).
+**Durability model:** the gz archive is the **irreplaceable source of truth**; `mkt.db` is a
+rebuildable projection (`mkt ingest` reconstructs it). So: **keep every gz forever** (no prune —
+~3GB/yr is trivial vs losing unrecoverable snapshots; `--prune` still exists but is NOT used). `mkt
+backup` mirrors the gz archive + a consistent DB dump (SQLite online-backup API, WAL-safe) to durable
+storage (default iCloud `~/Library/Mobile Documents/com~apple~CloudDocs/mkt-backup/`, override `--to`
+or `$MKT_BACKUP_DIR`), keeping the last 7 timestamped DB dumps. iCloud syncs it offsite. Guardrails:
+`sql` opens read-only (writes fail at the driver), the DB lives *outside* the git repo (repo ops can't
+touch it), no command deletes panel data.
 
 Scheduled via **launchd** (not cron): `~/scripts/mkt-record.sh` → `com.user.mkt-record.plist`,
-weekdays 4:30 PM local. The wrapper runs `record` → `ingest --prune` per region. Add regions by
-editing `REGIONS` in the wrapper. Logs: `~/scripts/logs/mkt-record/`.
+weekdays 4:30 PM local. The wrapper runs `record` → `ingest` → `backup` → panel-alert check per region.
+Add regions by editing `REGIONS` in the wrapper. Logs: `~/scripts/logs/mkt-record/`.
 
 Example panel queries:
 ```
