@@ -38,6 +38,12 @@ export default async function backup({ flags }) {
   if (!fs.existsSync(src)) {
     throw new MktError('not_found', `No snapshot archive at ${src}.`, 'mkt record --region america');
   }
+  // Checked before anything is written: an archive dir with no regions in it is an empty archive, not
+  // a successful backup of one, and publishing a DB dump for it would report success.
+  const regions = fs.readdirSync(src, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  if (!regions.length) {
+    throw new MktError('not_found', `Snapshot archive at ${src} is empty.`, 'mkt record --region america');
+  }
 
   const dbDir = path.join(dir, 'db');   // dumps get their own dir so retention can only delete our files
   try {
@@ -46,6 +52,7 @@ export default async function backup({ flags }) {
     throw new MktError('generic', `Backup directory is not writable: ${e.message}`,
       'check free space and permissions on the backup directory');
   }
+  sweepStale(dbDir);   // pid-scoped dumps would otherwise accumulate: the retention regex skips *.tmp
 
   // 1. Consistent DB snapshot (online backup API — safe on the live WAL database).
   //    Count first: openDb autocreates+migrates an empty DB on a fresh machine (db.js), so a 0-row
@@ -87,14 +94,22 @@ export default async function backup({ flags }) {
   //    rewriting them would reset every mtime and make iCloud re-upload the archive nightly
   //    (~3 GB/yr of churn to add ~12 MB).
   const dstSnap = path.join(dir, 'snapshots');
-  const regions = fs.readdirSync(src, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
 
   let refreshed = 0;
-  const protectedSrc = [];   // source rotted, but a verified mirror holds it — recoverable
-  const lost = [];           // source rotted with no mirror — that day is gone
+  const protectedSrc = [];   // source rotted, but a mirror re-verified just now holds it — recoverable
+  const lost = [];           // source rotted with no good mirror — that day is gone
+  const deferred = [];       // today caught mid-write; the next run publishes it
+  // Sweep the mirror's OWN directories, not the source's regions: a retired region — or a reset
+  // ~/.mkt with the iCloud mirror intact, exactly the restore this PR exists for — would otherwise
+  // keep its leftovers forever, and those are the dirs nobody looks at.
+  if (fs.existsSync(dstSnap)) {
+    for (const d of fs.readdirSync(dstSnap, { withFileTypes: true }).filter((e) => e.isDirectory())) {
+      sweepStale(path.join(dstSnap, d.name));
+    }
+  }
+
   for (const region of regions) {
     const todayName = `${todayFor(region)}.ndjson.gz`;
-    sweepStale(path.join(dstSnap, region));
     for (const name of fs.readdirSync(path.join(src, region)).filter((f) => f.endsWith('.ndjson.gz'))) {
       const from = path.join(src, region, name);
       const to = path.join(dstSnap, region, name);
@@ -104,10 +119,18 @@ export default async function backup({ flags }) {
       const mirrored = fs.existsSync(to);
       if (!isToday && mirrored && fs.statSync(to).size === fs.statSync(from).size) continue;
       if (await publish(from, to)) refreshed++;
+      else if (isToday) deferred.push(`${region}/${name}`);   // race with `record`; retried next run
       // Today failing is a benign race with `record`. A past day is immutable, so it is real
       // corruption — but only *unmirrored* corruption is a loss: if a verified copy is already in the
       // backup, this command did its job and the archive is safe.
-      else if (!isToday) (mirrored ? protectedSrc : lost).push(`${region}/${name}`);
+      else if (!isToday) {
+        // `mirrored` is existence only — the mirror was verified when written but never re-read, and
+        // this is the one path where its integrity is load-bearing. Calling a day "recoverable" and
+        // printing a restore command means proving the bytes: source-corrupt AND mirror-corrupt is the
+        // worst of the four states, and it must not report as safe.
+        const safe = mirrored && await verifyGzip(to).then(() => true, () => false);
+        (safe ? protectedSrc : lost).push(`${region}/${name}`);
+      }
     }
   }
 
@@ -119,8 +142,8 @@ export default async function backup({ flags }) {
 
   printObject({
     backed_up_to: dir, db_dump: path.basename(dbDest), db_mb: Math.round(fs.statSync(dbDest).size / 1e5) / 10,
-    db_rows: rows, snapshots_refreshed: refreshed,
-    corrupt_but_backed_up: protectedSrc.length, unrecoverable: lost.length, old_dumps_pruned: pruned,
+    db_rows: rows, snapshots_refreshed: refreshed, deferred_today: deferred,
+    corrupt_but_backed_up: protectedSrc, unrecoverable: lost, old_dumps_pruned: pruned,
   }, flags);
 
   // A rotted source that IS mirrored is the system working — say so on stderr and exit 0, so one bad
