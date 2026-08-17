@@ -23,7 +23,16 @@ mkt regions --json
 mkt record --region america                            # append today's wide snapshot → NDJSON
 mkt ingest --region america --prune                    # load snapshots → ~/.mkt/mkt.db, drop gz >30d
 mkt sql "SELECT symbol,RSI FROM snapshots WHERE date=(SELECT max(date) FROM snapshots) AND RSI<30" --json
+mkt alert add oversold --where 'RSI<30' --where 'market_cap_basic>1e9'  # live edge-triggered alert
+mkt alert check --kind live --dry-run                  # run alerts, show new entrants, no push
 ```
+
+## Alerts
+Edge-triggered: saved query → run on schedule → push only NEW entrants (diff vs last-seen).
+`live` alerts re-run a `screen` filter against the fresh scanner every 15m (market hours); `panel`
+alerts run a SQL query over `mkt.db` once/day after ingest. Sinks: ntfy.sh (`MKT_NTFY_TOPIC`) + macOS
+banner. State lives in the DB. `mkt alert add|list|test|rm|check`. Scheduled via launchd
+(`com.user.mkt-alert`, `com.user.mkt-record`).
 
 ## Filter mini-language (`--where`, AND-combined)
 ```

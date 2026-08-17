@@ -15,12 +15,13 @@ import regions from '../src/commands/regions.js';
 import record from '../src/commands/record.js';
 import ingest from '../src/commands/ingest.js';
 import sql from '../src/commands/sql.js';
+import alert from '../src/commands/alert.js';
 
-const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql };
+const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql, alert };
 const VERSION = '0.1.0';
 
 // Flags that consume the next token as a value; everything else is boolean. --where repeats.
-const VALUE_FLAGS = new Set(['region', 'columns', 'sort', 'limit', 'tf', 'bars', 'category', 'search', 'type', 'out']);
+const VALUE_FLAGS = new Set(['region', 'columns', 'sort', 'limit', 'tf', 'bars', 'category', 'search', 'type', 'out', 'sql', 'kind']);
 const REPEATABLE = new Set(['where']);
 
 function parse(argv) {
@@ -57,6 +58,8 @@ COMMANDS
   record    Append daily snapshot to ~/.mkt/snapshots/<region>/<date>.ndjson.gz
   ingest    Load snapshots into ~/.mkt/mkt.db (SQLite); --prune drops gz >30d after verify
   sql       Query the panel:     mkt sql "SELECT symbol,RSI FROM snapshots WHERE RSI<30"
+  alert     Edge-triggered alerts: add <name> --where '<expr>' (live) | --sql "<SELECT>" (panel)
+            list · rm <name> · test <name> · check [--kind live|panel] [--dry-run]
 
 GLOBAL  --json (NDJSON lists) · --compact · -q/--quiet · -v/--verbose · --no-color · --version
 FILTER  RSI < 30 · close > SMA200 (col-vs-col) · RSI between 55,72 · typespecs has common · RSI|60 < 30 (intraday)

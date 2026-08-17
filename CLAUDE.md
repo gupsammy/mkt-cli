@@ -77,11 +77,20 @@ only tv's MCP registration + skill wrapper, not the CLI.
   for now.** A native mkt/Python backtester (vectorbt/backtrader over the recorded panel) is deferred —
   its value scales with recorded history, and the panel is brand new (recording started today). Revisit
   once there's a meaningful depth of snapshots to backtest against.
-- Custom-condition alerts → mkt owns these itself, OUTSIDE TradingView (TV free tier caps alerts at 1).
-  An alert = saved condition + check schedule + notify sink; mkt already has the first two.
-  **Design locked (2026-08-17): intraday cadence (tight launchd interval during market hours) + ntfy.sh
-  push + cross-sectional screen alerts, edge-triggered (notify on NEW entrants, tiny JSON state file).**
-  Per-symbol thresholds + Telegram sink deferred. Not built yet.
+- Custom-condition alerts → **BUILT** (`mkt alert`, spec §12). Edge-triggered: saved query → run on
+  schedule → diff vs last-seen (`alert_hits` table) → push only NEW entrants. Two kinds:
+  `live` (a `screen --where` filter, run against the live scanner every 15m during market hours) and
+  `panel` (a SQL query over `mkt.db`, run once/day after ingest). Both sinks: ntfy.sh (`MKT_NTFY_TOPIC`)
+  + macOS banner. Definitions + state live in `mkt.db` (`alerts`, `alert_hits`).
+  ```
+  mkt alert add oversold --where 'RSI<30' --where 'market_cap_basic>1e9'   # live
+  mkt alert add wakeup --sql "SELECT symbol FROM snapshots WHERE ..."      # panel
+  mkt alert list | test <name> | rm <name> | check [--kind live|panel] [--dry-run]
+  ```
+  Scheduling: live → `com.user.mkt-alert.plist` (15m, `~/scripts/mkt-alert.sh` self-gates to
+  09:30–16:15 ET); panel → appended to `mkt-record.sh` after ingest. **Set `MKT_NTFY_TOPIC` in the
+  plist's EnvironmentVariables to enable phone push** (launchd doesn't inherit the shell env).
+  Per-symbol thresholds + Telegram sink still deferred.
 
 The SQLite query layer (Phase 2) is **built** — see "The recorder + DB" above. Deps are now
 `ws` + `better-sqlite3`.

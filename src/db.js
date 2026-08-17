@@ -17,10 +17,15 @@ const qid = (name) => '"' + name.replace(/"/g, '""') + '"';   // TV fields hold 
 // writable + auto-migrate for ingest.
 export function openDb({ readonly = false } = {}) {
   const file = dbPath();
-  if (readonly && !fs.existsSync(file)) {
-    throw new MktError('not_found', `No database yet at ${file}.`, 'mkt ingest');
-  }
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  // DB autocreate: the DB is core infra now, so a readonly open on a fresh machine shouldn't error —
+  // create + migrate the schema first via a throwaway writable handle, then open readonly.
+  if (readonly && !fs.existsSync(file)) {
+    const w = new Database(file);
+    w.pragma('journal_mode = WAL');
+    migrate(w);
+    w.close();
+  }
   const db = new Database(file, { readonly });
   if (!readonly) {
     db.pragma('journal_mode = WAL');   // concurrent reads while the daily ingest writes
@@ -43,6 +48,18 @@ function migrate(db) {
   for (const f of WIDE) {
     if (!have.has(f)) db.exec(`ALTER TABLE snapshots ADD COLUMN ${qid(f)} ${colType(f)};`);
   }
+
+  // Alerts (spec §12). Definitions + edge-trigger memory both live here, not a JSON side-file.
+  // kind: 'live' (query = newline-joined --where exprs, run against the live scanner) or
+  //       'panel' (query = raw SELECT over snapshots, run daily). alert_hits = who matched last check.
+  db.exec(`CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+    query TEXT NOT NULL, region TEXT NOT NULL DEFAULT 'america',
+    enabled INTEGER NOT NULL DEFAULT 1, created TEXT NOT NULL);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS alert_hits (
+    alert_id INTEGER NOT NULL, symbol TEXT NOT NULL, first_seen TEXT NOT NULL,
+    PRIMARY KEY (alert_id, symbol),
+    FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE);`);
 }
 
 // Prepared upsert over (date, symbol, ...WIDE). INSERT OR REPLACE keyed on the PK → re-ingesting
