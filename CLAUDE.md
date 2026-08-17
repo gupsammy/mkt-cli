@@ -56,8 +56,11 @@ only tv's MCP registration + skill wrapper, not the CLI.
   for now.** A native mkt/Python backtester (vectorbt/backtrader over the recorded panel) is deferred —
   its value scales with recorded history, and the panel is brand new (recording started today). Revisit
   once there's a meaningful depth of snapshots to backtest against.
-- Custom-condition alerts → mkt should own these itself, OUTSIDE TradingView (TV free tier caps alerts).
-  mkt records daily + queries live, so an alert = a saved condition evaluated on a schedule → notify. Future.
+- Custom-condition alerts → mkt owns these itself, OUTSIDE TradingView (TV free tier caps alerts at 1).
+  An alert = saved condition + check schedule + notify sink; mkt already has the first two.
+  **Design locked (2026-08-17): intraday cadence (tight launchd interval during market hours) + ntfy.sh
+  push + cross-sectional screen alerts, edge-triggered (notify on NEW entrants, tiny JSON state file).**
+  Per-symbol thresholds + Telegram sink deferred. Not built yet.
 
 The SQLite query/cache layer (fast cross-period joins over recorded snapshots) is deferred until a
 measured need — Phase 2.
