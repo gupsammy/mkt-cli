@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import zlib from 'node:zlib';
+import { Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { openDb } from '../db.js';
 import { MktError } from '../providers/tradingview.js';
 import { todayFor } from '../tzdate.js';
@@ -44,30 +46,54 @@ export default async function backup({ flags }) {
   //    dump would otherwise look like a successful backup.
   const date = todayFor();
   const dbDest = path.join(dbDir, `mkt-${date}.db`);
+  //    Staged like the gz mirror: a process killed mid-backup would otherwise leave a partial file
+  //    under a valid-looking name, and a half-written SQLite file is non-zero, so the size guard below
+  //    can't catch it — it would count toward KEEP_DB_DUMPS and eventually evict a good dump.
+  const dbTmp = `${dbDest}.tmp`;
   const db = openDb({ readonly: true });
   let rows;
   try {
     rows = db.prepare('SELECT COUNT(*) c FROM snapshots').get().c;
     if (!rows) throw new MktError('not_found', 'Panel is empty — nothing to back up.', 'mkt ingest --region america');
-    await db.backup(dbDest);
+    await db.backup(dbTmp);
+  } catch (e) {
+    fs.rmSync(dbTmp, { force: true });
+    throw e;
   } finally {
     db.close();
   }
+  fs.renameSync(dbTmp, dbDest);   // publish only a complete dump
 
   // 2. Mirror the irreplaceable gz archive (this is what rebuilds the DB via `mkt ingest`).
-  //    gz files are immutable once written, so skip what is already mirrored — cpSync defaults to
+  //    Past days are immutable once written, so skip what is already mirrored — cpSync defaults to
   //    force:true, which rewrites every file and resets its mtime, making iCloud re-upload the entire
   //    archive nightly (~3 GB/yr of churn to add ~12 MB).
   const dstSnap = path.join(dir, 'snapshots');
-  fs.cpSync(src, dstSnap, { recursive: true, force: false, errorOnExist: false });
+  const regions = fs.readdirSync(src, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
+  const today = new Set(regions.map((r) => path.join(src, r, `${todayFor(r)}.ndjson.gz`)));
 
-  // `record` is overwrite-idempotent, so today's file can change after it was first mirrored;
-  // force:false would leave the stale copy. Re-publish just those, staged and verified.
+  fs.cpSync(src, dstSnap, {
+    recursive: true, force: false, errorOnExist: false,
+    filter: (from, to) => {
+      // publish() is the SOLE writer for the current day. Letting cpSync copy it first would mirror a
+      // possibly mid-write file unverified, and publish()'s "keep the existing mirror" fallback would
+      // then preserve that truncated copy forever (force:false skips it, and publish only ever looks
+      // at the current date, so no later run revisits it).
+      if (today.has(from)) return false;
+      if (fs.statSync(from).isDirectory()) return true;
+      // Self-heal: force:false alone would keep a short mirror left by an interrupted earlier run.
+      if (fs.existsSync(to) && fs.statSync(to).size !== fs.statSync(from).size) fs.rmSync(to);
+      return true;
+    },
+  });
+
+  // `record` is overwrite-idempotent, so today's file can change after it was first mirrored.
+  // Staged and gunzip-verified, so a copy that catches `record` mid-write never replaces a good one.
   let refreshed = 0;
-  for (const region of fs.readdirSync(src, { withFileTypes: true }).filter((e) => e.isDirectory())) {
-    const name = `${todayFor(region.name)}.ndjson.gz`;
-    const from = path.join(src, region.name, name);
-    if (fs.existsSync(from) && publish(from, path.join(dstSnap, region.name, name))) refreshed++;
+  for (const region of regions) {
+    const name = `${todayFor(region)}.ndjson.gz`;
+    const from = path.join(src, region, name);
+    if (fs.existsSync(from) && await publish(from, path.join(dstSnap, region, name))) refreshed++;
   }
 
   // 3. Retain only the last KEEP_DB_DUMPS timestamped dumps (each is a full consistent copy).
@@ -89,16 +115,23 @@ export default async function backup({ flags }) {
 // Copy through a temp file and verify the gzip stream decompresses before replacing the live mirror.
 // `record` writes the day's file in place, so a concurrent copy can capture a truncated stream —
 // staging keeps a good previous backup rather than overwriting it with a corrupt one.
-function publish(from, to) {
+async function publish(from, to) {
   fs.mkdirSync(path.dirname(to), { recursive: true });
   const tmp = `${to}.tmp`;
   try {
     fs.copyFileSync(from, tmp);
-    zlib.gunzipSync(fs.readFileSync(tmp));   // throws on a truncated/corrupt stream
+    await verifyGzip(tmp);
     fs.renameSync(tmp, to);
     return true;
   } catch {
     fs.rmSync(tmp, { force: true });
     return false;   // mid-write source; the existing mirror stays intact and tomorrow's run catches up
   }
+}
+
+// Stream through gunzip and discard. The CRC/ISIZE trailer only validates if the whole stream
+// decompresses, so this is a real integrity check — streamed rather than gunzipSync'd so a ~12 MB gz
+// doesn't materialize its ~100 MB expansion in memory just to be thrown away.
+function verifyGzip(file) {
+  return pipeline(fs.createReadStream(file), zlib.createGunzip(), new Writable({ write(_c, _e, cb) { cb(); } }));
 }
