@@ -52,9 +52,10 @@ only tv's MCP registration + skill wrapper, not the CLI.
 **What Pine uniquely gives (and the honest verdict):**
 - Custom indicators → NOT a loss: compute from `mkt history` bars in Python/pandas (more flexible than Pine).
 - Strategy backtester (equity curve, win rate, drawdown, trade list, lookahead protection) → the ONE
-  genuinely hard-to-replace piece. Options when needed: (a) `tv`+Pine strategy tester (turnkey, GUI, one
-  symbol), or (b) Python backtester (vectorbt/backtrader) fed by the recorded panel — headless, scales to
-  hundreds of symbols. A backtester is a likely future mkt component; discuss before building.
+  genuinely hard-to-replace piece. **Decision (2026-08-17): use `tv`+Pine strategy tester for backtesting
+  for now.** A native mkt/Python backtester (vectorbt/backtrader over the recorded panel) is deferred —
+  its value scales with recorded history, and the panel is brand new (recording started today). Revisit
+  once there's a meaningful depth of snapshots to backtest against.
 - Custom-condition alerts → mkt should own these itself, OUTSIDE TradingView (TV free tier caps alerts).
   mkt records daily + queries live, so an alert = a saved condition evaluated on a schedule → notify. Future.
 
