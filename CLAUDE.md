@@ -42,8 +42,23 @@ weekdays 4:30 PM local. Add regions by editing `REGIONS` in the wrapper. Logs:
 `~/scripts/logs/mkt-record/`.
 
 ## Deliberately NOT here (was in tradingview-mcp, dropped with the CDP approach)
-Chart control, Pine Script dev/backtest, alerts, screenshots, drawings, order-book depth, real-time
-quotes. All of those need the live desktop chart; mkt is stateless data only. The SQLite query/cache
-layer (fast cross-period joins over recorded snapshots) is deferred until a measured need — Phase 2.
+Chart control, Pine Script dev/backtest, screenshots, drawings, order-book depth, real-time quotes.
+All need the live desktop chart. mkt is stateless data only.
+
+**Two separate tools, no overlap:** `mkt` = stateless data (this project). `tv`
+(`~/repos/forks/tradingview-mcp/`, still intact) = live chart control via CDP, on demand. We removed
+only tv's MCP registration + skill wrapper, not the CLI.
+
+**What Pine uniquely gives (and the honest verdict):**
+- Custom indicators → NOT a loss: compute from `mkt history` bars in Python/pandas (more flexible than Pine).
+- Strategy backtester (equity curve, win rate, drawdown, trade list, lookahead protection) → the ONE
+  genuinely hard-to-replace piece. Options when needed: (a) `tv`+Pine strategy tester (turnkey, GUI, one
+  symbol), or (b) Python backtester (vectorbt/backtrader) fed by the recorded panel — headless, scales to
+  hundreds of symbols. A backtester is a likely future mkt component; discuss before building.
+- Custom-condition alerts → mkt should own these itself, OUTSIDE TradingView (TV free tier caps alerts).
+  mkt records daily + queries live, so an alert = a saved condition evaluated on a schedule → notify. Future.
+
+The SQLite query/cache layer (fast cross-period joins over recorded snapshots) is deferred until a
+measured need — Phase 2.
 
 Full design spec: `../trading-experiments/docs/mkt-cli-spec.md`.
