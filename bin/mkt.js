@@ -13,8 +13,10 @@ import search from '../src/commands/search.js';
 import fields from '../src/commands/fields.js';
 import regions from '../src/commands/regions.js';
 import record from '../src/commands/record.js';
+import ingest from '../src/commands/ingest.js';
+import sql from '../src/commands/sql.js';
 
-const COMMANDS = { screen, history, quote, search, fields, regions, record };
+const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql };
 const VERSION = '0.1.0';
 
 // Flags that consume the next token as a value; everything else is boolean. --where repeats.
@@ -52,7 +54,9 @@ COMMANDS
   search    Resolve symbols:    mkt search apple
   fields    Column catalog:     mkt fields --category technicals --search rsi
   regions   List universes:     mkt regions
-  record    Append daily snapshot to data/snapshots/<region>/<date>.ndjson
+  record    Append daily snapshot to ~/.mkt/snapshots/<region>/<date>.ndjson.gz
+  ingest    Load snapshots into ~/.mkt/mkt.db (SQLite); --prune drops gz >30d after verify
+  sql       Query the panel:     mkt sql "SELECT symbol,RSI FROM snapshots WHERE RSI<30"
 
 GLOBAL  --json (NDJSON lists) · --compact · -q/--quiet · -v/--verbose · --no-color · --version
 FILTER  RSI < 30 · close > SMA200 (col-vs-col) · RSI between 55,72 · typespecs has common · RSI|60 < 30 (intraday)

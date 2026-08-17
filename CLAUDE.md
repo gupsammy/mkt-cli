@@ -31,15 +31,36 @@ record   --region america                        # append daily wide snapshot (s
 - Column typos are validated against `/metainfo` BEFORE the scan (the scanner returns null, not an
   error, for unknown columns).
 
-## The recorder + scheduling (the point of the project)
+## The recorder + DB + scheduling (the point of the project)
 Daily screener data is **unrecoverable** — the scanner has no "as of last week". `mkt record` appends
 a wide (~74-field) gzipped snapshot of the whole universe to
 `~/.mkt/snapshots/<region>/<YYYY-MM-DD>.ndjson.gz` (~12 MB/day america). Idempotent; read with
-`gzcat file | jq`. Bar/record dates use exchange-tz trading dates (`src/tzdate.js`), not naive UTC.
+`gzcat file | jq`. Record dates use exchange-tz trading dates (`src/tzdate.js`), not naive UTC.
+The `WIDE` field list lives in `src/schema.js` — single source of truth shared by the recorder and
+the DB schema; add a field there and both the next record and the next ingest pick it up.
+
+**The panel = SQLite (Phase 2, built).** `mkt ingest` loads the gz snapshots into `~/.mkt/mkt.db`,
+one `snapshots(date, symbol, …74 cols)` table, PK `(date,symbol)`, idempotent upsert. Schema
+auto-migrates: a new field in `schema.js` → `ALTER TABLE ADD COLUMN` on next ingest (old rows NULL).
+Query with `mkt sql "<SELECT>"` — a **read-only** connection (writes fail at the driver), NDJSON out.
+Bad SQL / unknown column → exit 2 with a hint. **Only snapshots are stored** — temporal price stays
+on-demand via `mkt history` (bars are recoverable from the WS any time, so caching them buys speed
+not durability; not worth it — see spec §9b). Each daily snapshot already *is* a daily bar + ~200
+features, so daily-resolution temporal analysis is a `snapshots` self-join, no bars needed.
+
+Retention: gz is a **30-day recovery buffer**, the DB is source of truth. `mkt ingest --prune` drops
+gz >30d, but only after a verified round-trip (DB row count for that date == file line count).
 
 Scheduled via **launchd** (not cron): `~/scripts/mkt-record.sh` → `com.user.mkt-record.plist`,
-weekdays 4:30 PM local. Add regions by editing `REGIONS` in the wrapper. Logs:
-`~/scripts/logs/mkt-record/`.
+weekdays 4:30 PM local. The wrapper runs `record` → `ingest --prune` per region. Add regions by
+editing `REGIONS` in the wrapper. Logs: `~/scripts/logs/mkt-record/`.
+
+Example panel queries:
+```
+mkt sql "SELECT symbol,name,RSI FROM snapshots WHERE date=(SELECT max(date) FROM snapshots) AND RSI<30 ORDER BY RSI LIMIT 20"
+# volume waking up while price flat (needs ≥2 recorded dates):
+mkt sql "SELECT s2.symbol FROM snapshots s1 JOIN snapshots s2 USING(symbol) WHERE s1.date='D1' AND s2.date='D2' AND s2.volume>2*s1.average_volume_90d_calc AND abs(s2.close-s1.close)/s1.close<0.03"
+```
 
 ## Deliberately NOT here (was in tradingview-mcp, dropped with the CDP approach)
 Chart control, Pine Script dev/backtest, screenshots, drawings, order-book depth, real-time quotes.
@@ -62,7 +83,7 @@ only tv's MCP registration + skill wrapper, not the CLI.
   push + cross-sectional screen alerts, edge-triggered (notify on NEW entrants, tiny JSON state file).**
   Per-symbol thresholds + Telegram sink deferred. Not built yet.
 
-The SQLite query/cache layer (fast cross-period joins over recorded snapshots) is deferred until a
-measured need — Phase 2.
+The SQLite query layer (Phase 2) is **built** — see "The recorder + DB" above. Deps are now
+`ws` + `better-sqlite3`.
 
 Full design spec: `../trading-experiments/docs/mkt-cli-spec.md`.

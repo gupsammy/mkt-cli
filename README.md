@@ -21,6 +21,8 @@ mkt fields --search rsi --json                         # grep the 3,771-field ca
 mkt fields --category margins                          # curated columns per category
 mkt regions --json
 mkt record --region america                            # append today's wide snapshot → NDJSON
+mkt ingest --region america --prune                    # load snapshots → ~/.mkt/mkt.db, drop gz >30d
+mkt sql "SELECT symbol,RSI FROM snapshots WHERE date=(SELECT max(date) FROM snapshots) AND RSI<30" --json
 ```
 
 ## Filter mini-language (`--where`, AND-combined)
@@ -36,18 +38,22 @@ Operators: `< <= > >= = != between has`. OR/nested groups are Phase 2.
 - `0` ok · `1` generic · `2` usage/bad-filter/bad-column · `3` not-found · `4` auth · `5` upstream.
 - With `--json`, errors are `{"error","message","hint"}` on stderr; `hint` is an executable command.
 
-## Data recording (the point)
+## Data recording + the panel (the point)
 `mkt record` appends a wide daily snapshot (~74 fields × full universe) to
-`$MKT_HOME/snapshots/<region>/<YYYY-MM-DD>.ndjson` (`MKT_HOME` defaults to `~/.mkt`). Daily screener
-data is **unrecoverable** — the scanner has no "as of last week" — so run it daily (cron) to build a
+`$MKT_HOME/snapshots/<region>/<YYYY-MM-DD>.ndjson.gz` (`MKT_HOME` defaults to `~/.mkt`). Daily
+screener data is **unrecoverable** — the scanner has no "as of last week" — so run it daily to build a
 point-in-time panel. Idempotent: re-running a day overwrites that day's file.
 
-```cron
-# 4:15pm ET weekdays — after the US close
-15 16 * * 1-5  cd /Users/samarthgupta/repos/myrepos/mkt && /usr/bin/node bin/mkt.js record --region america --json >> ~/.mkt/record.log 2>&1
-```
+`mkt ingest` loads the gz snapshots into `~/.mkt/mkt.db` (SQLite, one `snapshots(date,symbol,…)`
+table, idempotent upsert). Query with `mkt sql "<SELECT>"` (read-only connection; NDJSON out).
+`--prune` drops gz files >30 days old after a verified round-trip — the gz is a 30-day recovery
+buffer, the DB is the source of truth. Only snapshots are stored; temporal price stays on-demand via
+`mkt history`.
+
+Scheduled via **launchd** (not cron) — `~/scripts/mkt-record.sh` runs `record` → `ingest --prune`
+weekdays after the US close. See the repo's `CLAUDE.md` for the panel-query examples.
 
 ## Notes
 - Not affiliated with TradingView. Uses undocumented endpoints (the anonymous, account-less delayed
   path) — they can change without notice; all wire formats are isolated in `src/providers/tradingview.js`.
-- Deps: `ws` only. SQLite query/cache layer is deferred (spec §9b) until a measured need.
+- Deps: `ws` + `better-sqlite3`. The SQLite panel/query layer (Phase 2) is built — see above.
