@@ -55,7 +55,7 @@ export default async function backup({ flags }) {
   //    Staged like the gz mirror: a process killed mid-backup would otherwise leave a partial file
   //    under a valid-looking name, and a half-written SQLite file is non-zero, so the size guard below
   //    can't catch it — it would count toward KEEP_DB_DUMPS and eventually evict a good dump.
-  const dbTmp = `${dbDest}.tmp`;
+  const dbTmp = `${dbDest}.${process.pid}.tmp`;
   const db = openDb({ readonly: true });
   let rows;
   try {
@@ -90,18 +90,24 @@ export default async function backup({ flags }) {
   const regions = fs.readdirSync(src, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
 
   let refreshed = 0;
-  const corrupt = [];
+  const protectedSrc = [];   // source rotted, but a verified mirror holds it — recoverable
+  const lost = [];           // source rotted with no mirror — that day is gone
   for (const region of regions) {
     const todayName = `${todayFor(region)}.ndjson.gz`;
+    sweepStale(path.join(dstSnap, region));
     for (const name of fs.readdirSync(path.join(src, region)).filter((f) => f.endsWith('.ndjson.gz'))) {
       const from = path.join(src, region, name);
       const to = path.join(dstSnap, region, name);
       // `record` rewrites today's file in place (idempotent), so it is always re-published. A past day
       // is re-published only when the mirror disagrees on size — a run interrupted mid-copy.
       const isToday = name === todayName;
-      if (!isToday && fs.existsSync(to) && fs.statSync(to).size === fs.statSync(from).size) continue;
+      const mirrored = fs.existsSync(to);
+      if (!isToday && mirrored && fs.statSync(to).size === fs.statSync(from).size) continue;
       if (await publish(from, to)) refreshed++;
-      else if (!isToday) corrupt.push(`${region}/${name}`);   // today mid-write is a benign race; a past day is not
+      // Today failing is a benign race with `record`. A past day is immutable, so it is real
+      // corruption — but only *unmirrored* corruption is a loss: if a verified copy is already in the
+      // backup, this command did its job and the archive is safe.
+      else if (!isToday) (mirrored ? protectedSrc : lost).push(`${region}/${name}`);
     }
   }
 
@@ -113,15 +119,22 @@ export default async function backup({ flags }) {
 
   printObject({
     backed_up_to: dir, db_dump: path.basename(dbDest), db_mb: Math.round(fs.statSync(dbDest).size / 1e5) / 10,
-    db_rows: rows, snapshots_refreshed: refreshed, corrupt_sources: corrupt.length, old_dumps_pruned: pruned,
+    db_rows: rows, snapshots_refreshed: refreshed,
+    corrupt_but_backed_up: protectedSrc.length, unrecoverable: lost.length, old_dumps_pruned: pruned,
   }, flags);
 
-  // Past days are immutable, so one that won't decompress is real corruption at the source, not a
-  // race — and `ingest` would rebuild the panel from it. Report the rest of the backup first (it did
-  // happen), then fail loudly so the scheduled job can't sail past a rotting archive.
-  if (corrupt.length) {
-    throw new MktError('conflict', `Corrupt snapshot source, not mirrored: ${corrupt.join(', ')}.`,
-      `gzcat ~/.mkt/snapshots/${corrupt[0]} | tail -1`);
+  // A rotted source that IS mirrored is the system working — say so on stderr and exit 0, so one bad
+  // local file can't wedge the launchd chain (backup runs before the panel-alert check, under set -e).
+  if (protectedSrc.length && !flags.quiet) {
+    process.stderr.write(`# corrupt source, restore from the backup: ${protectedSrc.join(', ')}\n`);
+    process.stderr.write(`# cp ${path.join(dstSnap, protectedSrc[0])} ${path.join(src, protectedSrc[0])}\n`);
+  }
+
+  // A rotted source with no mirror is the one genuinely unrecoverable state: nothing to restore from,
+  // and `ingest` would rebuild the panel from the bad file. Data is printed first, then fail loudly.
+  if (lost.length) {
+    throw new MktError('conflict', `Corrupt snapshot source with no backup copy: ${lost.join(', ')}.`,
+      `gzcat ${path.join(src, lost[0])} | tail -1`);
   }
   return 0;
 }
@@ -134,7 +147,9 @@ export default async function backup({ flags }) {
 // backup volume) throws: a full disk and a benign mid-write race must not collapse into the same
 // signal, because the launchd wrapper sees nothing but the exit code.
 async function publish(from, to) {
-  const tmp = `${to}.tmp`;
+  // pid-scoped: a catch block can't clean up after SIGKILL or a launchd timeout, and two overlapping
+  // runs sharing one temp name could rename each other's half-written bytes into place.
+  const tmp = `${to}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(path.dirname(to), { recursive: true });
     fs.copyFileSync(from, tmp);
@@ -157,6 +172,17 @@ async function publish(from, to) {
       'check free space and permissions on the backup directory');
   }
   return true;
+}
+
+// Drop staging files a killed run left behind — nothing else sweeps them, and an unlabelled partial
+// sitting in the archive syncs to iCloud forever. Day-old only, so a concurrent run's temp survives.
+function sweepStale(dir) {
+  if (!fs.existsSync(dir)) return;
+  const cutoff = Date.now() - 86_400_000;
+  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'))) {
+    const p = path.join(dir, f);
+    if (fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { force: true });
+  }
 }
 
 // Stream through gunzip and discard. The CRC/ISIZE trailer only validates if the whole stream
