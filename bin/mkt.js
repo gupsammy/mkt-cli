@@ -60,7 +60,7 @@ COMMANDS
   fields    Column catalog:     mkt fields --category technicals --search rsi
   regions   List universes:     mkt regions
   record    Append daily snapshot to ~/.mkt/snapshots/<region>/<date>.ndjson.gz
-  ingest    Load snapshots into ~/.mkt/mkt.db (SQLite); --prune drops gz >30d after verify
+  ingest    Load snapshots into ~/.mkt/mkt.db (SQLite); --prune (deprecated — gz is kept forever)
   backup    Mirror gz archive + a consistent DB dump to durable storage (default iCloud) [--to DIR]
   sql       Query the panel:     mkt sql "SELECT symbol,RSI FROM snapshots WHERE RSI<30"
   alert     Edge-triggered alerts: add <name> --where '<expr>' (live) | --sql "<SELECT>" (panel)
