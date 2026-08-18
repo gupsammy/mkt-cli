@@ -5,19 +5,38 @@ import zlib from 'node:zlib';
 import readline from 'node:readline';
 import { openDb, upsertStmt, rowToParams } from '../db.js';
 import { MktError } from '../errors.js';
+import { notify } from '../notify.js';
 import { printObject } from '../output.js';
 
 const home = () => process.env.MKT_HOME || path.join(os.homedir(), '.mkt');
 
-// Load one .ndjson.gz file into the DB inside a single transaction. Returns rows ingested.
+// Load one .ndjson.gz file into the DB inside a single transaction. Returns a result so one bad
+// file cannot abort the caller's loop. Byte offsets refer to the decompressed NDJSON stream.
 // region is stamped here (not in the NDJSON): the archive directory is the authority on it.
 async function ingestFile(file, db, stmt, region) {
-  const rl = readline.createInterface({ input: fs.createReadStream(file).pipe(zlib.createGunzip()) });
   const rows = [];
-  for await (const line of rl) { if (line.trim()) rows.push({ ...JSON.parse(line), region }); }
-  const tx = db.transaction((items) => { for (const o of items) stmt.run(rowToParams(o)); });
-  tx(rows);
-  return rows.length;
+  let lineNumber = 0, byteOffset = 0, failedLine = null, failedByte = 0;
+  try {
+    const rl = readline.createInterface({ input: fs.createReadStream(file).pipe(zlib.createGunzip()) });
+    for await (const line of rl) {
+      lineNumber++;
+      const lineStart = byteOffset;
+      byteOffset += Buffer.byteLength(line) + 1;
+      if (!line.trim()) continue;
+      try {
+        rows.push({ ...JSON.parse(line), region });
+      } catch (error) {
+        failedLine = lineNumber;
+        failedByte = lineStart;
+        throw error;
+      }
+    }
+    const tx = db.transaction((items) => { for (const o of items) stmt.run(rowToParams(o)); });
+    tx(rows);
+    return { ok: true, rows: rows.length };
+  } catch (error) {
+    return { ok: false, error, line: failedLine, byte: failedLine == null ? byteOffset : failedByte };
+  }
 }
 
 // mkt ingest [--region R] [--all] [--prune]
@@ -52,12 +71,17 @@ export default async function ingest({ flags }) {
 
   let ingested = 0, filesDone = 0, pruned = 0;
   const perDate = {};
+  const failures = [];
 
   for (const f of todo) {
-    const n = await ingestFile(path.join(dir, f), db, stmt, region);
+    const result = await ingestFile(path.join(dir, f), db, stmt, region);
+    if (!result.ok) {
+      failures.push({ file: f, ...result });
+      continue;
+    }
     const date = f.replace('.ndjson.gz', '');
-    perDate[date] = n;
-    ingested += n; filesDone++;
+    perDate[date] = result.rows;
+    ingested += result.rows; filesDone++;
   }
 
   if (flags.prune) {
@@ -74,6 +98,14 @@ export default async function ingest({ flags }) {
   const totalRows = db.prepare(`SELECT COUNT(*) c FROM snapshots`).get().c;
   const dates = db.prepare(`SELECT COUNT(DISTINCT date) c FROM snapshots`).get().c;
   db.close();
+
+  if (failures.length) {
+    const detail = failures.map((f) =>
+      `${f.file}: ${f.line == null ? '' : `line ${f.line}, `}byte ${f.byte} (${f.error.message})`).join('; ');
+    await notify('mkt ingest failed', `${region}: ${detail}`);
+    throw new MktError('conflict', `Failed to ingest ${failures.length} snapshot file(s): ${detail}.`,
+      `mkt ingest --region ${region} --all`);
+  }
   const skipped = files.length - todo.length;
   // A restored/partially-replayed archive is invisible in a bare count — say what was skipped and
   // how to replay it, so "skipped" never silently reads as "covered".

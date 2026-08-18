@@ -19,8 +19,9 @@ import alert from '../src/commands/alert.js';
 import size from '../src/commands/size.js';
 import watchlist from '../src/commands/watchlist.js';
 import backup from '../src/commands/backup.js';
+import notify from '../src/commands/notify.js';
 
-const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql, alert, size, watchlist, backup };
+const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql, alert, size, watchlist, backup, notify };
 const VERSION = '0.1.0';
 
 // Per-command flag contract. Anything not declared here (or global) is rejected: a typo'd flag
@@ -42,6 +43,7 @@ const SPEC = {
   size:      { value: ['entry', 'stop', 'account', 'risk', 'max-pct', 'target'] },
   watchlist: { value: ['kind'] },
   backup:    { value: ['to'] },
+  notify:    {},
 };
 
 // The command is the first bare token — global flags (all boolean, so they consume nothing) may
