@@ -40,8 +40,10 @@ The `WIDE` field list lives in `src/schema.js` — single source of truth shared
 the DB schema; add a field there and both the next record and the next ingest pick it up.
 
 **The panel = SQLite (Phase 2, built).** `mkt ingest` loads the gz snapshots into `~/.mkt/mkt.db`,
-one `snapshots(date, symbol, …74 cols)` table, PK `(date,symbol)`, idempotent upsert. Schema
-auto-migrates: a new field in `schema.js` → `ALTER TABLE ADD COLUMN` on next ingest (old rows NULL).
+one `snapshots(date, symbol, region, …74 cols)` table, PK `(date,symbol)`, `(symbol,date)` index,
+idempotent upsert. Incremental by default (only files ≥ the region's newest ingested date replay;
+`--all` = full rebuild). Schema auto-migrates: a new field in `schema.js` → `ALTER TABLE ADD COLUMN`
+on next ingest (old rows NULL).
 Query with `mkt sql "<SELECT>"` — a **read-only** connection (writes fail at the driver), NDJSON out.
 Bad SQL / unknown column → exit 2 with a hint. **Only snapshots are stored** — temporal price stays
 on-demand via `mkt history` (bars are recoverable from the WS any time, so caching them buys speed
@@ -58,7 +60,9 @@ or `$MKT_BACKUP_DIR`), keeping the last 7 timestamped DB dumps. iCloud syncs it 
 touch it), no command deletes panel data.
 
 Scheduled via **launchd** (not cron): `~/scripts/mkt-record.sh` → `com.user.mkt-record.plist`,
-weekdays 4:30 PM local. The wrapper runs `record` → `ingest` → `backup` → panel-alert check per region.
+**Tue–Sat 03:30 IST** (= 18:00 EDT / 17:00 EST Mon–Fri, after the US close — the machine runs IST;
+16:30 IST is pre-open and recorded the previous session under the wrong date, hence `record`'s
+NY-close freshness guard). The wrapper runs `record` → `ingest` → `backup` → panel-alert check per region.
 Add regions by editing `REGIONS` in the wrapper. Logs: `~/scripts/logs/mkt-record/`.
 
 Example panel queries:
@@ -84,7 +88,8 @@ only tv's MCP registration + skill wrapper, not the CLI.
   its value scales with recorded history, and the panel is brand new (recording started today). Revisit
   once there's a meaningful depth of snapshots to backtest against.
 - Custom-condition alerts → **BUILT** (`mkt alert`, spec §12). Edge-triggered: saved query → run on
-  schedule → diff vs last-seen (`alert_hits` table) → push only NEW entrants. Two kinds:
+  schedule → diff vs active `alert_hits` stints (append-only: departures close a stint, never
+  delete it — the entry/exit history feeds forward-eval) → push only NEW entrants. Two kinds:
   `live` (a `screen --where` filter, run against the live scanner every 15m during market hours) and
   `panel` (a SQL query over `mkt.db`, run once/day after ingest). Both sinks: ntfy.sh (`MKT_NTFY_TOPIC`)
   + macOS banner. Definitions + state live in `mkt.db` (`alerts`, `alert_hits`).
