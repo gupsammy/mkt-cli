@@ -1,5 +1,5 @@
 import { openDb } from '../db.js';
-import { MktError } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { printRows, printObject } from '../output.js';
 
 const now = () => new Date().toISOString();

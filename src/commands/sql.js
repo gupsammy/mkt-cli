@@ -1,5 +1,5 @@
 import { openDb } from '../db.js';
-import { MktError } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { printRows } from '../output.js';
 
 // mkt sql "SELECT ..."  — raw read-only SQL against ~/.mkt/mkt.db.
