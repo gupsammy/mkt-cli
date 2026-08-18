@@ -4,23 +4,27 @@ import os from 'node:os';
 import zlib from 'node:zlib';
 import readline from 'node:readline';
 import { openDb, upsertStmt, rowToParams } from '../db.js';
-import { MktError } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { printObject } from '../output.js';
 
 const home = () => process.env.MKT_HOME || path.join(os.homedir(), '.mkt');
 
 // Load one .ndjson.gz file into the DB inside a single transaction. Returns rows ingested.
-async function ingestFile(file, db, stmt) {
+// region is stamped here (not in the NDJSON): the archive directory is the authority on it.
+async function ingestFile(file, db, stmt, region) {
   const rl = readline.createInterface({ input: fs.createReadStream(file).pipe(zlib.createGunzip()) });
   const rows = [];
-  for await (const line of rl) { if (line.trim()) rows.push(JSON.parse(line)); }
+  for await (const line of rl) { if (line.trim()) rows.push({ ...JSON.parse(line), region }); }
   const tx = db.transaction((items) => { for (const o of items) stmt.run(rowToParams(o)); });
   tx(rows);
   return rows.length;
 }
 
-// mkt ingest [--region R] [--prune]
-// Loads every snapshot .ndjson.gz into ~/.mkt/mkt.db (idempotent upsert).
+// mkt ingest [--region R] [--all] [--prune]
+// Loads snapshot .ndjson.gz files into ~/.mkt/mkt.db (idempotent upsert). Incremental by default:
+// only files on/after the region's newest ingested date replay — ">=" not ">" because `record`
+// rewrites today's file in place, so today must be re-absorbed. --all replays every file (full
+// rebuild: fresh machine, restored archive, relabeled days).
 // --prune is DEPRECATED and not used by the scheduled job: the gz archive is the source of truth and
 // is kept forever (it is unrecoverable; the DB is a projection this command can always rebuild from
 // it). It still deletes gz >30d after a verified round-trip if you ask for it. See `mkt backup`.
@@ -34,11 +38,17 @@ export default async function ingest({ flags }) {
 
   const db = openDb({ readonly: false });
   const stmt = upsertStmt(db);
+
+  // High-water mark is per-region. Rows ingested before the region column existed are NULL and
+  // don't count — so the first post-migration run replays everything once and stamps them.
+  const maxDate = db.prepare(`SELECT MAX(date) d FROM snapshots WHERE region = ?`).get(region).d;
+  const todo = (flags.all || !maxDate) ? files : files.filter((f) => f.replace('.ndjson.gz', '') >= maxDate);
+
   let ingested = 0, filesDone = 0, pruned = 0;
   const perDate = {};
 
-  for (const f of files) {
-    const n = await ingestFile(path.join(dir, f), db, stmt);
+  for (const f of todo) {
+    const n = await ingestFile(path.join(dir, f), db, stmt, region);
     const date = f.replace('.ndjson.gz', '');
     perDate[date] = n;
     ingested += n; filesDone++;
@@ -58,7 +68,7 @@ export default async function ingest({ flags }) {
   const totalRows = db.prepare(`SELECT COUNT(*) c FROM snapshots`).get().c;
   const dates = db.prepare(`SELECT COUNT(DISTINCT date) c FROM snapshots`).get().c;
   db.close();
-  printObject({ ingested, files: filesDone, pruned, db_rows: totalRows, db_dates: dates, region }, flags);
+  printObject({ ingested, files: filesDone, skipped: files.length - todo.length, pruned, db_rows: totalRows, db_dates: dates, region }, flags);
   return 0;
 }
 
