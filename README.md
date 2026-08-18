@@ -22,7 +22,9 @@ mkt fields --category margins                          # curated columns per cat
 mkt regions --json
 mkt record --region america                            # append today's wide snapshot → NDJSON
 mkt ingest --region america                            # load snapshots → ~/.mkt/mkt.db
+                                                       # (--no-notify: the wrapper owns the alert)
 mkt backup                                             # mirror gz archive + DB dump → iCloud [--to DIR]
+mkt notify --title=mkt-record --body="backup failed"   # scheduler bridge → the configured sinks
 mkt sql "SELECT symbol,RSI FROM snapshots WHERE date=(SELECT max(date) FROM snapshots) AND RSI<30" --json
 mkt alert add oversold --where 'RSI<30' --where 'market_cap_basic>1e9'  # live edge-triggered alert
 mkt alert check --kind live --dry-run                  # run alerts, show new entrants, no push

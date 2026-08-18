@@ -19,8 +19,9 @@ import alert from '../src/commands/alert.js';
 import size from '../src/commands/size.js';
 import watchlist from '../src/commands/watchlist.js';
 import backup from '../src/commands/backup.js';
+import notify from '../src/commands/notify.js';
 
-const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql, alert, size, watchlist, backup };
+const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql, alert, size, watchlist, backup, notify };
 const VERSION = '0.1.0';
 
 // Per-command flag contract. Anything not declared here (or global) is rejected: a typo'd flag
@@ -36,12 +37,13 @@ const SPEC = {
   fields:    { value: ['region', 'category', 'search'] },
   regions:   {},
   record:    { value: ['region', 'columns'], bool: ['force'] },
-  ingest:    { value: ['region'], bool: ['all', 'prune'] },
+  ingest:    { value: ['region'], bool: ['all', 'prune', 'no-notify'] },
   sql:       {},
   alert:     { value: ['region', 'kind', 'sql'], repeat: ['where'], bool: ['dry-run'] },
   size:      { value: ['entry', 'stop', 'account', 'risk', 'max-pct', 'target'] },
   watchlist: { value: ['kind'] },
   backup:    { value: ['to'] },
+  notify:    { value: ['title', 'body'] },
 };
 
 // The command is the first bare token — global flags (all boolean, so they consume nothing) may
@@ -106,8 +108,9 @@ COMMANDS
   record    Append daily snapshot to ~/.mkt/snapshots/<region>/<date>.ndjson.gz
             (refuses pre-close NY time — would mislabel the previous session; --force overrides)
   ingest    Load NEW snapshots into ~/.mkt/mkt.db (incremental; --all = full replay;
-            --prune deprecated, implies --all — re-reads the whole archive)
+            --prune deprecated, implies --all; --no-notify delegates scheduled alerts to its wrapper)
   backup    Mirror gz archive + a consistent DB dump to durable storage (default iCloud) [--to DIR]
+  notify    Internal scheduler bridge: mkt notify --title=<title> --body=<body>
   sql       Query the panel:     mkt sql "SELECT symbol,RSI FROM snapshots WHERE RSI<30"
   alert     Edge-triggered alerts: add <name> --where '<expr>' (live) | --sql "<SELECT>" (panel)
             list · rm <name> · test <name> · check [--kind live|panel] [--dry-run]

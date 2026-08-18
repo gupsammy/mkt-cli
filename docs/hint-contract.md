@@ -31,5 +31,7 @@ than importing `size()` for exactly that reason.
 
 ## Extending it
 
-The argv splitter is whitespace-only, and hints elsewhere in the CLI carry quoted expressions
-(`--where 'RSI < 30'`) that need a quote-aware tokenizer first.
+`size-hints`'s own argv splitter is whitespace-only, so it cannot execute a hint carrying a quoted
+expression (`--where 'RSI < 30'`). That gap is now closed elsewhere: `test/ingest-resilience.test.js`
+ships a quote-aware `splitHint`, and asserts the resulting command actually runs. Reuse it — or lift
+it somewhere shared — rather than writing a third splitter.

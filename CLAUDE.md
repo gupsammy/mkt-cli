@@ -50,11 +50,17 @@ a phantom session). Both name `--force` in their hints; it disables both.
 **The panel = SQLite (Phase 2, built).** `mkt ingest` loads the gz snapshots into `~/.mkt/mkt.db`,
 one `snapshots(date, symbol, region, …74 cols)` table, PK `(date,symbol)`, plus two indexes:
 `(symbol,date)` and `(region,date)` — the latter keeps ingest's `MAX(date) WHERE region=?`
-high-water-mark query off a full table scan every night. Idempotent upsert. Incremental by default
-(only files ≥ the region's newest ingested date replay — `≥` not `>`, because `record` replaces
-today's file on every run, so today must be re-absorbed;
+high-water-mark query off a full table scan every night. Idempotent upsert. Incremental by default:
+files ≥ the region's newest ingested date replay (`≥` not `>`, because `record` replaces today's
+file on every run, so today must be re-absorbed), **plus any older archive date missing from the
+DB** — a corrupt day is retried until repaired rather than becoming a permanent silent hole;
 `--all` = full rebuild). Schema auto-migrates: a new field in `schema.js` → `ALTER TABLE ADD COLUMN`
 on next ingest (old rows NULL).
+Data failures notify by default; `--no-notify` lets the scheduled wrapper own the single alert.
+That wrapper treats ingest's partial exit as non-fatal and always continues to backup + panel alerts,
+so a repeatedly corrupt day stays loud without wedging the durable mirror. For gzip-stream rot,
+`backup` preserves an existing good mirror and prints the restore command; it does not validate
+individual JSON records inside an otherwise valid gzip stream.
 Query with `mkt sql "<SELECT>"` — a **read-only** connection (writes fail at the driver), NDJSON out.
 Bad SQL / unknown column → exit 2 with a hint. **Only snapshots are stored** — temporal price stays
 on-demand via `mkt history` (bars are recoverable from the WS any time, so caching them buys speed
@@ -134,7 +140,9 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Three suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `record-staged-write` (record's
+Four suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
+(corrupt-file continuation, retry visibility, partial-success output, offsets, notification
+ownership, and prune safety), `record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
 cases spawn a real child process), and `backup-sweep` (backup collects day-old staged tmps from the
 source archive and touches nothing else; end-to-end through the real CLI: ingest → backup).

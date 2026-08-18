@@ -5,19 +5,39 @@ import zlib from 'node:zlib';
 import readline from 'node:readline';
 import { openDb, upsertStmt, rowToParams } from '../db.js';
 import { MktError } from '../errors.js';
+import { notify } from '../notify.js';
 import { printObject } from '../output.js';
 
 const home = () => process.env.MKT_HOME || path.join(os.homedir(), '.mkt');
+const NOTIFY_BODY_MAX = 3500;   // Telegram allows 4096 chars; leave room for title/context
 
-// Load one .ndjson.gz file into the DB inside a single transaction. Returns rows ingested.
+// Load one .ndjson.gz file into the DB inside a single transaction. Returns a result so one bad
+// file cannot abort the caller's loop. Byte offsets refer to the decompressed NDJSON stream.
 // region is stamped here (not in the NDJSON): the archive directory is the authority on it.
 async function ingestFile(file, db, stmt, region) {
-  const rl = readline.createInterface({ input: fs.createReadStream(file).pipe(zlib.createGunzip()) });
   const rows = [];
-  for await (const line of rl) { if (line.trim()) rows.push({ ...JSON.parse(line), region }); }
-  const tx = db.transaction((items) => { for (const o of items) stmt.run(rowToParams(o)); });
-  tx(rows);
-  return rows.length;
+  let lineNumber = 0, byteOffset = 0, failedLine = null, failedByte = 0;
+  try {
+    const rl = readline.createInterface({ input: fs.createReadStream(file).pipe(zlib.createGunzip()) });
+    for await (const line of rl) {
+      lineNumber++;
+      const lineStart = byteOffset;
+      byteOffset += Buffer.byteLength(line) + 1;
+      if (!line.trim()) continue;
+      try {
+        rows.push({ ...JSON.parse(line), region });
+      } catch (error) {
+        failedLine = lineNumber;
+        failedByte = lineStart;
+        throw error;
+      }
+    }
+    const tx = db.transaction((items) => { for (const o of items) stmt.run(rowToParams(o)); });
+    tx(rows);
+    return { ok: true, rows: rows.length };
+  } catch (error) {
+    return { ok: false, error, line: failedLine, byte: failedLine == null ? byteOffset : failedByte };
+  }
 }
 
 // mkt ingest [--region R] [--all] [--prune]
@@ -30,7 +50,20 @@ async function ingestFile(file, db, stmt, region) {
 // it). It still deletes gz >30d after a verified round-trip if you ask for it — and it implies
 // --all (re-reads the whole archive), since the round-trip is only verified for replayed files.
 // See `mkt backup`.
-export default async function ingest({ flags }) {
+export default async function ingest(args) {
+  const region = args.flags.region || 'america';
+  try {
+    return await runIngest(args);
+  } catch (error) {
+    if (!args.flags['no-notify'] && !['usage', 'not_found'].includes(error.code)) {
+      const body = `${region}: ${error.message}`;
+      await notify('mkt ingest failed', body.length > NOTIFY_BODY_MAX ? body.slice(0, NOTIFY_BODY_MAX - 1) + '…' : body);
+    }
+    throw error;
+  }
+}
+
+async function runIngest({ flags }) {
   const region = flags.region || 'america';
   const dir = path.join(home(), 'snapshots', region);
   if (!fs.existsSync(dir)) {
@@ -48,19 +81,33 @@ export default async function ingest({ flags }) {
   // pruning on stale counts would delete gz files nothing verified.
   const maxDate = db.prepare(`SELECT MAX(date) d FROM snapshots WHERE region = ?`).get(region).d;
   const all = flags.all || flags.prune || !maxDate;
-  const todo = all ? files : files.filter((f) => f.replace('.ndjson.gz', '') >= maxDate);
+  // A failed file has no rows, so later successes can advance maxDate past it. Include every archive
+  // date missing from the projection or that corrupt day would become a permanent silent hole.
+  // This also replays a valid 0-row archive forever; record never produces one, and that harmless
+  // extra read is safer than conflating an absent projection date with successful coverage.
+  const have = all ? null : new Set(db.prepare(
+    `SELECT DISTINCT date FROM snapshots WHERE region = ?`).all(region).map((r) => r.date));
+  const todo = all ? files : files.filter((f) => {
+    const date = f.replace('.ndjson.gz', '');
+    return date >= maxDate || !have.has(date);
+  });
 
   let ingested = 0, filesDone = 0, pruned = 0;
   const perDate = {};
+  const failures = [];
 
   for (const f of todo) {
-    const n = await ingestFile(path.join(dir, f), db, stmt, region);
+    const result = await ingestFile(path.join(dir, f), db, stmt, region);
+    if (!result.ok) {
+      failures.push({ file: f, ...result });
+      continue;
+    }
     const date = f.replace('.ndjson.gz', '');
-    perDate[date] = n;
-    ingested += n; filesDone++;
+    perDate[date] = result.rows;
+    ingested += result.rows; filesDone++;
   }
 
-  if (flags.prune) {
+  if (flags.prune && !failures.length) {
     const cutoff = cutoffDate(30);   // YYYY-MM-DD 30 days before the newest recorded date
     const newest = files.length ? files[files.length - 1].replace('.ndjson.gz', '') : null;
     for (const f of files) {
@@ -80,8 +127,30 @@ export default async function ingest({ flags }) {
   if (skipped && !flags.quiet) {
     process.stderr.write(`# skipped=${skipped} file(s) before ${maxDate} (already ingested); mkt ingest --all replays everything\n`);
   }
-  printObject({ ingested, files: filesDone, skipped, pruned, db_rows: totalRows, db_dates: dates, region }, flags);
+  const summary = { ingested, files: filesDone, skipped, pruned, db_rows: totalRows, db_dates: dates, region };
+  if (failures.length) summary.failed = failures.length;
+  printObject(summary, flags);
+  if (failures.length) {
+    const detail = failures.map(formatFailure).join('; ');
+    const first = failures[0];
+    const source = shellQuote(path.join(dir, first.file));
+    const hint = first.line == null
+      ? `gzip -cd ${source} | tail -3`
+      : `gzip -cd ${source} | sed -n '${first.line}p'`;
+    throw new MktError('generic', `Failed to ingest ${failures.length} snapshot file(s): ${detail}.`, hint);
+  }
   return 0;
+}
+
+function formatFailure(failure) {
+  const offset = failure.line == null
+    ? `after ${failure.byte} decompressed bytes`
+    : `line ${failure.line}, byte ${failure.byte}`;
+  return `${failure.file}: ${offset} (${failure.error.message})`;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
 // N days before the newest file date — string compare works on YYYY-MM-DD. Uses UTC epoch math
