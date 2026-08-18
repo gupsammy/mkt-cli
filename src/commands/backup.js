@@ -6,7 +6,7 @@ import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import Database from 'better-sqlite3';
 import { openDb } from '../db.js';
-import { MktError } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { todayFor } from '../tzdate.js';
 import { printObject } from '../output.js';
 
@@ -63,6 +63,10 @@ export default async function backup({ flags }) {
   //    under a valid-looking name, and a half-written SQLite file is non-zero, so the size guard below
   //    can't catch it — it would count toward KEEP_DB_DUMPS and eventually evict a good dump.
   const dbTmp = `${dbDest}.${process.pid}.tmp`;
+  //    db.backup() writes the destination in WAL mode, leaving -shm/-wal sidecars beside the tmp
+  //    name. The rename below doesn't take them, so they're dropped on every exit path — unswept
+  //    they'd sit in db/ and sync to iCloud forever.
+  const rmTmp = () => { for (const s of ['', '-shm', '-wal']) fs.rmSync(dbTmp + s, { force: true }); };
   const db = openDb({ readonly: true });
   let rows;
   try {
@@ -70,7 +74,7 @@ export default async function backup({ flags }) {
     if (!rows) throw new MktError('not_found', 'Panel is empty — nothing to back up.', 'mkt ingest --region america');
     await db.backup(dbTmp);
   } catch (e) {
-    fs.rmSync(dbTmp, { force: true });
+    rmTmp();
     throw e;
   } finally {
     db.close();
@@ -81,10 +85,11 @@ export default async function backup({ flags }) {
   let ok;
   try { ok = chk.pragma('quick_check', { simple: true }); } finally { chk.close(); }
   if (ok !== 'ok') {
-    fs.rmSync(dbTmp, { force: true });
+    rmTmp();
     throw new MktError('conflict', `DB dump failed integrity check: ${ok}.`, 'mkt ingest --region america');
   }
   fs.renameSync(dbTmp, dbDest);   // publish only a complete, verified dump
+  rmTmp();                        // the dump itself just moved; this clears only the sidecars
 
   // 2. Mirror the irreplaceable gz archive (this is what rebuilds the DB via `mkt ingest`).
   //    EVERY file goes through publish() — staged, gunzip-verified, renamed — so nothing can land in
@@ -202,7 +207,7 @@ async function publish(from, to) {
 function sweepStale(dir) {
   if (!fs.existsSync(dir)) return;
   const cutoff = Date.now() - 86_400_000;
-  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'))) {
+  for (const f of fs.readdirSync(dir).filter((f) => /\.tmp(-shm|-wal)?$/.test(f))) {
     const p = path.join(dir, f);
     if (fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { force: true });
   }
