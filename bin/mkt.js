@@ -37,7 +37,7 @@ const SPEC = {
   fields:    { value: ['region', 'category', 'search'] },
   regions:   {},
   record:    { value: ['region', 'columns'], bool: ['force'] },
-  ingest:    { value: ['region'], bool: ['all', 'prune'] },
+  ingest:    { value: ['region'], bool: ['all', 'prune', 'no-notify'] },
   sql:       {},
   alert:     { value: ['region', 'kind', 'sql'], repeat: ['where'], bool: ['dry-run'] },
   size:      { value: ['entry', 'stop', 'account', 'risk', 'max-pct', 'target'] },
@@ -108,7 +108,7 @@ COMMANDS
   record    Append daily snapshot to ~/.mkt/snapshots/<region>/<date>.ndjson.gz
             (refuses pre-close NY time — would mislabel the previous session; --force overrides)
   ingest    Load NEW snapshots into ~/.mkt/mkt.db (incremental; --all = full replay;
-            --prune deprecated, implies --all — re-reads the whole archive)
+            --prune deprecated, implies --all; --no-notify delegates scheduled alerts to its wrapper)
   backup    Mirror gz archive + a consistent DB dump to durable storage (default iCloud) [--to DIR]
   notify    Internal scheduler bridge: mkt notify --title=<title> --body=<body>
   sql       Query the panel:     mkt sql "SELECT symbol,RSI FROM snapshots WHERE RSI<30"

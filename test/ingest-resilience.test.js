@@ -58,6 +58,9 @@ function fixture(t) {
     run(...args) {
       return spawnSync(process.execPath, [CLI, ...args], { env, encoding: 'utf8' });
     },
+    runShell(command) {
+      return spawnSync('/bin/sh', ['-c', command], { env, encoding: 'utf8' });
+    },
   };
 }
 
@@ -77,6 +80,12 @@ test('ingest skips a corrupt file, commits later files, reports its offset, and 
   const result = f.run('ingest', '--all', '--json');
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /2026-08-02\.ndjson\.gz: line 2, byte \d+/);
+  const error = JSON.parse(result.stderr);
+  assert.equal(error.error, 'generic');
+  assert.ok(error.hint);
+  const diagnostic = f.runShell(error.hint);
+  assert.equal(diagnostic.status, 0, diagnostic.stderr);
+  assert.match(diagnostic.stdout, /\{bad json/);
   assert.deepEqual(JSON.parse(result.stdout), {
     ingested: 2, files: 2, skipped: 0, pruned: 0, db_rows: 2, db_dates: 2,
     region: 'america', failed: 1,
@@ -160,11 +169,19 @@ test('failed full replay does not prune any source snapshots', (t) => {
   assert.equal(f.hasSnapshot('2020-01-02.ndjson.gz'), true);
 });
 
-test('ingest notifies failures that happen before the per-file loop', (t) => {
+test('ingest does not notify a missing-region user error', (t) => {
   const f = fixture(t);
 
   const result = f.run('ingest', '--region', 'missing');
   assert.equal(result.status, 3, result.stderr);
-  assert.match(fs.readFileSync(f.notifyLog, 'utf8'), /mkt ingest failed/);
-  assert.match(fs.readFileSync(f.notifyLog, 'utf8'), /No snapshots/);
+  assert.equal(fs.existsSync(f.notifyLog), false);
+});
+
+test('scheduled ingest can delegate its one notification to the wrapper', (t) => {
+  const f = fixture(t);
+  f.writeSnapshot('2026-08-01.ndjson.gz', ['{bad json']);
+
+  const result = f.run('ingest', '--all', '--no-notify', '--compact');
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(fs.existsSync(f.notifyLog), false);
 });

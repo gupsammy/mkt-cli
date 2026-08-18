@@ -55,8 +55,10 @@ export default async function ingest(args) {
   try {
     return await runIngest(args);
   } catch (error) {
-    const body = `${region}: ${error.message}`;
-    await notify('mkt ingest failed', body.length > NOTIFY_BODY_MAX ? body.slice(0, NOTIFY_BODY_MAX - 1) + '…' : body);
+    if (!args.flags['no-notify'] && !['usage', 'not_found'].includes(error.code)) {
+      const body = `${region}: ${error.message}`;
+      await notify('mkt ingest failed', body.length > NOTIFY_BODY_MAX ? body.slice(0, NOTIFY_BODY_MAX - 1) + '…' : body);
+    }
     throw error;
   }
 }
@@ -128,7 +130,9 @@ async function runIngest({ flags }) {
   printObject(summary, flags);
   if (failures.length) {
     const detail = failures.map(formatFailure).join('; ');
-    throw new MktError('generic', `Failed to ingest ${failures.length} snapshot file(s): ${detail}.`);
+    const first = failures[0];
+    const hint = `gzip -cd ${shellQuote(path.join(dir, first.file))} | sed -n '${first.line ?? 1}p'`;
+    throw new MktError('generic', `Failed to ingest ${failures.length} snapshot file(s): ${detail}.`, hint);
   }
   return 0;
 }
@@ -138,6 +142,10 @@ function formatFailure(failure) {
     ? `after ${failure.byte} decompressed bytes`
     : `line ${failure.line}, byte ${failure.byte}`;
   return `${failure.file}: ${offset} (${failure.error.message})`;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
 // N days before the newest file date — string compare works on YYYY-MM-DD. Uses UTC epoch math

@@ -48,6 +48,10 @@ idempotent upsert. Incremental by default (files ≥ the region's newest ingeste
 any older archive date missing from the DB so a failed day is retried until repaired;
 `--all` = full rebuild). Schema auto-migrates: a new field in `schema.js` → `ALTER TABLE ADD COLUMN`
 on next ingest (old rows NULL).
+Data failures notify by default; `--no-notify` lets the scheduled wrapper own the single alert.
+That wrapper treats ingest's partial exit as non-fatal and always continues to backup + panel alerts,
+so a repeatedly corrupt day stays loud without wedging the durable mirror. `backup` preserves an
+existing good mirror of a corrupt source and prints the restore command.
 Query with `mkt sql "<SELECT>"` — a **read-only** connection (writes fail at the driver), NDJSON out.
 Bad SQL / unknown column → exit 2 with a hint. **Only snapshots are stored** — temporal price stays
 on-demand via `mkt history` (bars are recoverable from the WS any time, so caching them buys speed
