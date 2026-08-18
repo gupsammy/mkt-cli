@@ -128,12 +128,16 @@ better-sqlite3 included.
 the user pastes back, so it must run. (Parser errors in `bin/mkt.js` are the deliberate exception — a
 malformed argv has no command worth suggesting, so their hint is a flag *reference*, not a command.) Four distinct bugs hid in that gap (PR #8, five review rounds) — none
 visible by reading the code, all trivial to catch by executing the hint. The suite spawns the real CLI
-rather than importing `size()` for exactly that reason. Two tiers:
+rather than importing `size()` for exactly that reason. Three tiers:
 - **correctable input** (well-formed numbers that just don't size) → the hint is a *correction*, so it
   must carry the caller's flags forward. Exit-0-on-rerun is NOT sufficient here: dropping `--risk 100`
   from a target hint still exits 0, silently sizing at 1%. Flags are compared as sets (hint emits a
   fixed order) and every caller flag must survive or be raised, never lowered.
 - **malformed input** → the hint is an *example* of the right shape; it only has to differ and run.
+- **the grid** — a fixed sweep asserting only that a hint runs. Weaker than the first tier by design,
+  but it covers inputs nobody wrote down: the two `ceil()` rounding bugs came out of a 37,496-input
+  sweep at a 0.6% hit rate, which no hand-picked list converges on. The full sweep is ~30 minutes of
+  spawns, hence a deterministic grid of the same shape.
 
 The suite clears the whole `MKT_*` namespace before spawning — `size` falls back to `$MKT_ACCOUNT`, and
 the vars other commands read have *side effects*: an `alert` test would send real Telegram/ntfy pushes,

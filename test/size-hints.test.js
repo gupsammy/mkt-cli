@@ -88,6 +88,13 @@ const FAILING = [
   // limits clear, so the `'target' in offered` assertion below was aspirational until this row existed.
   ['valid target alongside a cap-bound failure',
     ['--entry', '5000', '--stop', '4999', '--account', '6000', '--target', '5100']],
+  // A LOSING target alongside a sizing failure. Hoisting the target check above the sizing checks made
+  // this branch reachable for the first time, and its hint corrected only the target — one blind spot
+  // traded for its mirror image. Both limits, so neither correction path can regress alone.
+  ['losing target alongside a cap-bound failure',
+    ['--entry', '5000', '--stop', '4999', '--account', '6000', '--target', '4000']],
+  ['losing target alongside a risk-bound failure',
+    ['--entry', '100', '--stop', '7000', '--account', '6000', '--target', '200']],
 ];
 
 for (const [name, args, env] of FAILING) {
@@ -167,20 +174,24 @@ for (const [name, args, env] of INVALID) {
 // is a fixed grid of the same shape. Deterministic: no seed, no sampling, no flake.
 test('every hint-emitting input in the grid resolves in one step', () => {
   const failures = [];
+  // The target dimension is what lets the grid reach the losing-target throw — the one branch whose
+  // hint carries no limit correction of its own, and therefore the one a targetless sweep cannot see.
+  // 331 was dropped from the accounts to pay for it; FAILING pins both need* paths directly anyway.
   for (const entry of [0.01, 1.07, 50, 1234.56, 9000])
     for (const stop of [0.0001, 1, 47, 4999, 7000])
-      for (const account of [100, 331, 6000])
-        for (const [risk, cap] of [[1, 25], [0.01, 1], [0.75, 100], [100, 25]]) {
-          if (entry === stop) continue;
-          const args = ['--entry', `${entry}`, '--stop', `${stop}`,
-            '--account', `${account}`, '--risk', `${risk}`, '--max-pct', `${cap}`];
-          const failed = run(args);
-          if (failed.code === 0) continue;
-          if (!failed.hint) { failures.push(`no hint: mkt size ${args.join(' ')}`); continue; }
-          if (run(hintArgv(failed.hint)).code !== 0) {
-            failures.push(`from: mkt size ${args.join(' ')}\n    hint: ${failed.hint}`);
+      for (const account of [100, 6000])
+        for (const [risk, cap] of [[1, 25], [0.01, 1], [0.75, 100], [100, 25]])
+          for (const target of [null, entry * (stop < entry ? 0.9 : 1.1), entry * (stop < entry ? 1.2 : 0.8)]) {
+            const args = ['--entry', `${entry}`, '--stop', `${stop}`,
+              '--account', `${account}`, '--risk', `${risk}`, '--max-pct', `${cap}`,
+              ...(target == null ? [] : ['--target', `${target}`])];
+            const failed = run(args);
+            if (failed.code === 0) continue;
+            if (!failed.hint) { failures.push(`no hint: mkt size ${args.join(' ')}`); continue; }
+            if (run(hintArgv(failed.hint)).code !== 0) {
+              failures.push(`from: mkt size ${args.join(' ')}\n    hint: ${failed.hint}`);
+            }
           }
-        }
   assert.deepEqual(failures, [], `${failures.length} hint(s) do not resolve:\n  ${failures.join('\n  ')}`);
 });
 

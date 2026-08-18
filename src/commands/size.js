@@ -45,31 +45,22 @@ export default async function size({ flags }) {
   // other limit already passes; otherwise fall back to the account that satisfies both at once. The
   // caller's own percentages are carried into every hint, since needAccount was derived from them and
   // a hint that silently reverts them to the defaults is computed against different numbers than it runs.
-  const hint = ({ risk = riskPct, cap: capFlag = maxPct, acct = null, target = null }) =>
-    `mkt size --entry ${entry} --stop ${stop}`
-    + (risk !== 1 ? ` --risk ${risk}` : '') + (capFlag !== 25 ? ` --max-pct ${capFlag}` : '')
-    + ((account !== 6000 || envAccount) && !acct ? ` --account ${account}` : '') + (acct ? ` --account ${acct}` : '')
-    + (target ? ` --target ${target}` : '');
   // Validated here, above the sizing checks, for two reasons. `--target abc` used to be read only after
   // sizing succeeded, so a sizing failure swallowed it entirely — the caller pasted the correction back,
   // got a clean answer, and never learned their target was garbage. And a sizing hint can only carry the
   // target forward if it is already known good; otherwise the rerun trades one error for another.
   const target = flags.target != null ? num(flags.target, 'target', { positive: true }) : null;
+  // tgt defaults to the caller's own target, not null. With `target` in scope a null default would make
+  // "no target" and "forgot to pass the target" identical at the call site — which is exactly how the
+  // sizing hints came to drop it. Omission now carries it; only a deliberate override replaces it.
+  const hint = ({ risk = riskPct, cap: capFlag = maxPct, acct = null, target: tgt = target }) =>
+    `mkt size --entry ${entry} --stop ${stop}`
+    + (risk !== 1 ? ` --risk ${risk}` : '') + (capFlag !== 25 ? ` --max-pct ${capFlag}` : '')
+    + ((account !== 6000 || envAccount) && !acct ? ` --account ${account}` : '') + (acct ? ` --account ${acct}` : '')
+    + (tgt ? ` --target ${tgt}` : '');
   // Signed, not Math.abs: a target on the losing side of the trade (below entry on a long, above it
   // on a short) is a loss, and abs() reported it as profit with a positive R multiple.
   const rewardPerShare = target == null ? null : (side === 'long' ? target - entry : entry - target);
-  if (target != null && rewardPerShare <= 0) {
-    // A 2R target, floored at half the entry: on a short whose stop is wide relative to entry,
-    // `entry - 2R` goes negative, and a suggested price below zero fails num() on the very next run.
-    // The floored branch is no longer 2R — it is just the nearest sane target that is still a profit.
-    const twoR = side === 'long' ? entry + riskPerShare * 2 : Math.max(entry - riskPerShare * 2, entry / 2);
-    // twoR is strictly on the profitable side by construction; only the rounding can break that, so
-    // round against that inequality rather than at a chosen precision — see profitable() below.
-    const better = (v) => (side === 'long' ? v > entry : v < entry);
-    throw new MktError('usage',
-      `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.`,
-      hint({ target: profitable(twoR, better) }));
-  }
   // ceil() clears these thresholds in exact arithmetic, but the rerun rounds again — so a suggestion can
   // land a hair under the very limit it was computed to clear, handing back a hint that reproduces the
   // error. This is what profitable() already does for the target price; these three were the last places
@@ -84,19 +75,36 @@ export default async function size({ flags }) {
   const needRisk = bump(ceil2(riskPerShare / account * 100), 0.01, clearsRisk);
   const needPct = bump(Math.ceil(entry / account * 100), 1, clearsCap);
   const needAccount = bump(Math.ceil(Math.max(riskPerShare * 100 / riskPct, entry * 100 / maxPct)), 1, clearsBoth);
-  // If even the account cannot be made to clear, there is no correction left to offer — the example is
-  // still a runnable command, which is the invariant that matters. Unreached in the sweep.
-  const acctHint = (t) => (needAccount != null ? hint({ acct: needAccount, target: t }) : EXAMPLE);
+  // The limit correction the sizing branches below would offer, computed once so the target error can
+  // carry it too. Without this a losing target on an input that also fails sizing gets a hint fixing
+  // only the target — the same "raised one limit, other still blocked" relocation the comment above
+  // warns about, on a third axis. null means no correction exists; EXAMPLE still runs.
+  const sizingFix =
+    byRisk >= 1 && byCap >= 1 ? {}
+    : byRisk < 1 && byCap >= 1 && needRisk != null && needRisk <= 100 ? { risk: needRisk }
+    : byRisk >= 1 && needPct != null && needPct <= 100 ? { cap: needPct }
+    : needAccount != null ? { acct: needAccount } : null;
+  if (target != null && rewardPerShare <= 0) {
+    // A 2R target, floored at half the entry: on a short whose stop is wide relative to entry,
+    // `entry - 2R` goes negative, and a suggested price below zero fails num() on the very next run.
+    // The floored branch is no longer 2R — it is just the nearest sane target that is still a profit.
+    const twoR = side === 'long' ? entry + riskPerShare * 2 : Math.max(entry - riskPerShare * 2, entry / 2);
+    // twoR is strictly on the profitable side by construction; only the rounding can break that, so
+    // round against that inequality rather than at a chosen precision — see profitable() below.
+    const better = (v) => (side === 'long' ? v > entry : v < entry);
+    throw new MktError('usage',
+      `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.`,
+      sizingFix ? hint({ ...sizingFix, target: profitable(twoR, better) }) : EXAMPLE);
+  }
   if (byRisk < 1) {
     throw new MktError('usage',
       `Stop is too wide for the risk budget: $${round(riskDollars)} at $${round(riskPerShare)}/share is under one share.`,
-      byCap >= 1 && needRisk != null && needRisk <= 100
-        ? hint({ risk: needRisk, target }) : acctHint(target));
+      sizingFix ? hint(sizingFix) : EXAMPLE);
   }
   if (byCap < 1) {
     throw new MktError('usage',
       `Position cap (--max-pct ${maxPct}% = $${round(cap)}) is below one share at $${entry}.`,
-      needPct != null && needPct <= 100 ? hint({ cap: needPct, target }) : acctHint(target));
+      sizingFix ? hint(sizingFix) : EXAMPLE);
   }
   const shares = Math.min(byRisk, byCap);   // floor throughout: actual risk is always <= stated risk
   const capped = byCap < byRisk;
