@@ -123,6 +123,20 @@ test('ingest reports every corrupt file in one error', (t) => {
   assert.deepEqual(rows.stdout.trim().split('\n').map(JSON.parse), [{ symbol: 'NYSE:GOOD3' }]);
 });
 
+test('non-parse failure hint does not invent a line number', (t) => {
+  const f = fixture(t);
+  f.writeRawSnapshot('2026-08-01.ndjson.gz', 'not a gzip stream');
+
+  const result = f.run('ingest', '--all', '--json');
+  assert.equal(result.status, 1, result.stderr);
+  const error = JSON.parse(result.stderr);
+  assert.match(error.hint, /\| tail -3$/);
+  assert.doesNotMatch(error.hint, /sed -n/);
+  const diagnostic = f.runShell(error.hint);
+  assert.equal(diagnostic.status, 0);
+  assert.notEqual(diagnostic.stderr, '');
+});
+
 test('clean ingest keeps its existing summary and does not notify', (t) => {
   const f = fixture(t);
   f.writeSnapshot('2026-08-01.ndjson.gz', [

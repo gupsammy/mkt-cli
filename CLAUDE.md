@@ -50,8 +50,9 @@ any older archive date missing from the DB so a failed day is retried until repa
 on next ingest (old rows NULL).
 Data failures notify by default; `--no-notify` lets the scheduled wrapper own the single alert.
 That wrapper treats ingest's partial exit as non-fatal and always continues to backup + panel alerts,
-so a repeatedly corrupt day stays loud without wedging the durable mirror. `backup` preserves an
-existing good mirror of a corrupt source and prints the restore command.
+so a repeatedly corrupt day stays loud without wedging the durable mirror. For gzip-stream rot,
+`backup` preserves an existing good mirror and prints the restore command; it does not validate
+individual JSON records inside an otherwise valid gzip stream.
 Query with `mkt sql "<SELECT>"` — a **read-only** connection (writes fail at the driver), NDJSON out.
 Bad SQL / unknown column → exit 2 with a hint. **Only snapshots are stored** — temporal price stays
 on-demand via `mkt history` (bars are recoverable from the WS any time, so caching them buys speed
@@ -132,13 +133,12 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Three suites: `size-hints` (the hint contract, below), `record-staged-write` (record's
+Four suites: `size-hints` (the hint contract, below), `ingest-resilience` (corrupt-file continuation,
+retry visibility, partial-success output, offsets, notification ownership, and prune safety),
+`record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
 cases spawn a real child process), and `backup-sweep` (backup collects day-old staged tmps from the
 source archive and touches nothing else; end-to-end through the real CLI: ingest → backup).
-
-`test/ingest-resilience.test.js` drives the real CLI against a temporary `MKT_HOME`: corrupt-file
-continuation/retry, partial-success output, offsets, notification sinks, and prune safety.
 
 `test/size-hints.test.js` asserts the **hint contract**: a *command-level* error hint is a command line
 the user pastes back, so it must run. (Parser errors in `bin/mkt.js` are the deliberate exception — a

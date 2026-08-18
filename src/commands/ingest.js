@@ -83,6 +83,8 @@ async function runIngest({ flags }) {
   const all = flags.all || flags.prune || !maxDate;
   // A failed file has no rows, so later successes can advance maxDate past it. Include every archive
   // date missing from the projection or that corrupt day would become a permanent silent hole.
+  // This also replays a valid 0-row archive forever; record never produces one, and that harmless
+  // extra read is safer than conflating an absent projection date with successful coverage.
   const have = all ? null : new Set(db.prepare(
     `SELECT DISTINCT date FROM snapshots WHERE region = ?`).all(region).map((r) => r.date));
   const todo = all ? files : files.filter((f) => {
@@ -131,7 +133,10 @@ async function runIngest({ flags }) {
   if (failures.length) {
     const detail = failures.map(formatFailure).join('; ');
     const first = failures[0];
-    const hint = `gzip -cd ${shellQuote(path.join(dir, first.file))} | sed -n '${first.line ?? 1}p'`;
+    const source = shellQuote(path.join(dir, first.file));
+    const hint = first.line == null
+      ? `gzip -cd ${source} | tail -3`
+      : `gzip -cd ${source} | sed -n '${first.line}p'`;
     throw new MktError('generic', `Failed to ingest ${failures.length} snapshot file(s): ${detail}.`, hint);
   }
   return 0;
