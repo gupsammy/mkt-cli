@@ -46,12 +46,16 @@ export default async function record({ flags }) {
   // one. If ~every symbol's close is identical to the newest already-recorded day, this is that
   // day again: refuse rather than write a phantom session the panel would read as 0% change.
   if (!flags.force && columns.includes('close')) {
-    const { ratio, prev } = await sameCloseRatio(dir, date, rows);
-    if (ratio > 0.99) {
+    const { ratio, prev, compared } = await sameCloseRatio(dir, date, rows);
+    // compared >= 100: a thin previous file (narrow --columns, truncation) could make a handful
+    // of matches read as 100% and block a real session with only --force as the escape.
+    if (ratio > 0.99 && compared >= 100) {
       throw new MktError('conflict',
-        `${Math.round(ratio * 1000) / 10}% of closes are identical to ${prev} — market likely closed (holiday?); refusing to record a phantom session as ${date}.`,
+        `${Math.round(ratio * 1000) / 10}% of ${compared} closes are identical to ${prev} — market likely closed (holiday?); refusing to record a phantom session as ${date}.`,
         'mkt record --force if this is truly a new session');
     }
+  } else if (!flags.force && !flags.quiet) {
+    process.stderr.write(`# staleness guard skipped: close not in --columns\n`);
   }
 
   // Gzip on the fly (~8× smaller than plain NDJSON). Read back with `gzcat file | jq`.
@@ -88,5 +92,5 @@ export async function sameCloseRatio(dir, date, rows) {
     compared++;
     if (prev.get(r.symbol) === r.close) same++;
   }
-  return { ratio: compared ? same / compared : 0, prev: prevFile.replace('.ndjson.gz', '') };
+  return { ratio: compared ? same / compared : 0, prev: prevFile.replace('.ndjson.gz', ''), compared };
 }

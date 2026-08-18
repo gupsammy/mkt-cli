@@ -96,6 +96,14 @@ function migrate(db) {
   // One ACTIVE stint per (alert, symbol): the widened PK alone would let two overlapping `check`
   // runs (a slow live scan vs the next 15-min firing) both insert; INSERT OR IGNORE needs this
   // index to turn the second insert into a no-op. Closed stints (departed set) are exempt.
+  // Repair first: CREATE UNIQUE INDEX fails over existing duplicates, and this runs on every
+  // writable open — one pre-index double-insert would otherwise brick the whole write path.
+  // Keep the earliest active stint, close later ones as degenerate (departed = own first_seen).
+  db.exec(`UPDATE alert_hits SET departed = first_seen
+    WHERE departed IS NULL AND EXISTS (
+      SELECT 1 FROM alert_hits h2
+       WHERE h2.alert_id = alert_hits.alert_id AND h2.symbol = alert_hits.symbol
+         AND h2.departed IS NULL AND h2.first_seen < alert_hits.first_seen);`);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_hits_active
     ON alert_hits(alert_id, symbol) WHERE departed IS NULL;`);
 

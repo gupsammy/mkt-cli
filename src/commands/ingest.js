@@ -41,8 +41,12 @@ export default async function ingest({ flags }) {
 
   // High-water mark is per-region. Rows ingested before the region column existed are NULL and
   // don't count — so the first post-migration run replays everything once and stamps them.
+  // --prune implies --all: the verified-round-trip check below compares DB counts against rows
+  // replayed THIS run (perDate), and an incremental run never replays the >30d prune candidates —
+  // pruning on stale counts would delete gz files nothing verified.
   const maxDate = db.prepare(`SELECT MAX(date) d FROM snapshots WHERE region = ?`).get(region).d;
-  const todo = (flags.all || !maxDate) ? files : files.filter((f) => f.replace('.ndjson.gz', '') >= maxDate);
+  const all = flags.all || flags.prune || !maxDate;
+  const todo = all ? files : files.filter((f) => f.replace('.ndjson.gz', '') >= maxDate);
 
   let ingested = 0, filesDone = 0, pruned = 0;
   const perDate = {};
@@ -60,7 +64,7 @@ export default async function ingest({ flags }) {
     for (const f of files) {
       const date = f.replace('.ndjson.gz', '');
       if (date >= cutoff || date === newest) continue;   // keep the 30-day buffer + always the latest
-      const inDb = db.prepare(`SELECT COUNT(*) c FROM snapshots WHERE date = ?`).get(date).c;
+      const inDb = db.prepare(`SELECT COUNT(*) c FROM snapshots WHERE date = ? AND region = ?`).get(date, region).c;
       if (inDb === perDate[date]) { fs.rmSync(path.join(dir, f)); pruned++; }   // verified round-trip → safe to delete
     }
   }
