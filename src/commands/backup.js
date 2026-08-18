@@ -70,25 +70,36 @@ export default async function backup({ flags }) {
     if (!rows) throw new MktError('not_found', 'Panel is empty — nothing to back up.', 'mkt ingest --region america');
     await db.backup(dbTmp);
   } catch (e) {
-    fs.rmSync(dbTmp, { force: true });
+    rmStaged(dbTmp);
     throw e;
   } finally {
     db.close();
   }
   //    quick_check before publishing: the gz mirror is gunzip-verified, and the dump is the one
   //    artifact you would restore from that nothing else validates.
-  const chk = new Database(dbTmp, { readonly: true });
+  //    Wrapped like the db.backup() above, because verification can fail by throwing rather than by
+  //    returning a bad result: better-sqlite3 opens lazily, so a corrupt header surfaces as
+  //    SQLITE_NOTADB out of the pragma, and a target where the -shm cannot be created throws
+  //    SQLITE_CANTOPEN out of the constructor. Unwrapped, either escapes as an untyped generic
+  //    (exit 1, unlike every other failure here) and strands a full-size dump in the backup dir.
   let ok;
-  try { ok = chk.pragma('quick_check', { simple: true }); } finally { chk.close(); }
-  //    The dump inherits journal_mode=wal from the source, so merely opening it above created
-  //    `<dbTmp>-shm`/`-wal`, and a readonly connection cannot delete them on close. renameSync below
-  //    moves only dbTmp, so without this they orphan — one pid-scoped pair per run, forever, in the
-  //    directory you would read during a restore. sweepStale's `.tmp` filter and the retention regex
-  //    both miss them (the suffix is `.tmp-shm`), so nothing downstream would ever collect them.
-  fs.rmSync(`${dbTmp}-shm`, { force: true });
-  fs.rmSync(`${dbTmp}-wal`, { force: true });
+  try {
+    const chk = new Database(dbTmp, { readonly: true });
+    try { ok = chk.pragma('quick_check', { simple: true }); } finally { chk.close(); }
+  } catch (e) {
+    rmStaged(dbTmp);
+    throw new MktError('conflict', `DB dump could not be verified: ${e.message}`, 'mkt ingest --region america');
+  }
+  //    Opening the dump above created `<dbTmp>-shm`/`-wal`, because it inherits journal_mode=wal from
+  //    the source, and a readonly connection cannot delete them on close. renameSync below moves only
+  //    dbTmp, so without this they orphan — one pid-scoped pair per run, forever, in the directory you
+  //    would read during a restore. sweepStale's `.tmp` filter and the retention regex both miss them
+  //    (the suffix is `.tmp-shm`), so nothing downstream would ever collect them. Unlinking is safe
+  //    precisely because the connection was readonly: it cannot append frames, so the -wal holds no
+  //    committed data the main file lacks.
+  rmSidecars(dbTmp);
   if (ok !== 'ok') {
-    fs.rmSync(dbTmp, { force: true });
+    rmStaged(dbTmp);
     throw new MktError('conflict', `DB dump failed integrity check: ${ok}.`, 'mkt ingest --region america');
   }
   fs.renameSync(dbTmp, dbDest);   // publish only a complete, verified dump
@@ -145,9 +156,11 @@ export default async function backup({ flags }) {
   //    A failed dump throws before the rename above, so anything named mkt-<date>.db is complete.
   const dumps = fs.readdirSync(dbDir).filter((f) => /^mkt-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort();
   let pruned = 0;
-  // force: a dump removed by a concurrent run would otherwise throw here, failing a backup whose
-  // real work is already done and published.
-  for (const f of dumps.slice(0, Math.max(0, dumps.length - KEEP_DB_DUMPS))) { fs.rmSync(path.join(dbDir, f), { force: true }); pruned++; }
+  // Tolerate a dump a concurrent run already removed — that must not fail a backup whose real work is
+  // done and published — but count only what this run actually deleted, so old_dumps_pruned stays true.
+  for (const f of dumps.slice(0, Math.max(0, dumps.length - KEEP_DB_DUMPS))) {
+    try { fs.rmSync(path.join(dbDir, f)); pruned++; } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  }
 
   printObject({
     backed_up_to: dir, db_dump: path.basename(dbDest), db_mb: Math.round(fs.statSync(dbDest).size / 1e5) / 10,
@@ -208,6 +221,18 @@ async function publish(from, to) {
 
 // Drop staging files a killed run left behind — nothing else sweeps them, and an unlabelled partial
 // sitting in the archive syncs to iCloud forever. Day-old only, so a concurrent run's temp survives.
+// A staged dump is three files once it has been opened: the dump plus the WAL sidecars that opening it
+// creates. Every abandon path has to drop all three, or the sweep 24h later becomes the only collector.
+function rmSidecars(p) {
+  fs.rmSync(`${p}-shm`, { force: true });
+  fs.rmSync(`${p}-wal`, { force: true });
+}
+
+function rmStaged(p) {
+  fs.rmSync(p, { force: true });
+  rmSidecars(p);
+}
+
 function sweepStale(dir) {
   if (!fs.existsSync(dir)) return;
   const cutoff = Date.now() - 86_400_000;
