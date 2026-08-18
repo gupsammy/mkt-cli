@@ -7,28 +7,27 @@ import { printObject } from '../output.js';
 //
 // Every number here ends up in a real order, so each one is validated at the boundary rather than
 // allowed to propagate: a NaN or a negative silently produces a share count that looks like an answer.
+// --target included, above every throw: read only after sizing, a garbage target was swallowed by any
+// earlier failure — the caller pasted the correction back, got a clean answer, and never learned.
 export default async function size({ flags }) {
   const entry = num(flags.entry, 'entry', { positive: true });
   const stop = num(flags.stop, 'stop', { positive: true });
   // MKT_ACCOUNT is user input too — routed through num() so a stale `6k` in a shell profile or a plist
   // fails loudly instead of making every share count NaN, which JSON renders as a confident `null`.
+  // `||`, not `??`: MKT_ACCOUNT= (a wrapper passing an unset var through, an empty plist entry) is a
+  // normal way to blank a variable, and treating it as set removed the 6000 fallback entirely.
   const account = flags.account != null
     ? num(flags.account, 'account', { positive: true })
     : num(process.env.MKT_ACCOUNT || 6000, 'account (from $MKT_ACCOUNT)', { positive: true });
-  // hint() may omit a flag only when the rerun would fall back to the same value. That holds for risk
-  // and max-pct, whose defaults are constants — but the account default is `$MKT_ACCOUNT ?? 6000`, so
-  // with the env set an omitted --account resolves to something else entirely and the hint fails.
-  const envAccount = !!process.env.MKT_ACCOUNT;   // `||` above, so an empty value is unset, not zero
   const riskPct = pct(flags.risk, 'risk', 1);
   const maxPct = pct(flags['max-pct'], 'max-pct', 25);
+  const target = flags.target != null ? num(flags.target, 'target', { positive: true }) : null;
 
   const riskPerShare = Math.abs(entry - stop);
-  // Every other failure in this command hands back a runnable command; this one used to hand back null,
-  // which made "a size error always offers a way forward" an invariant with one silent exception.
-  // The hint stays an EXAMPLE rather than a correction carrying the caller's account and risk: any stop
-  // it suggested would be a trading decision (stop distance is the whole input this command sizes from),
-  // and on a small account a suggested stop can fail the position cap instead — relocating the error,
-  // which is the bug class PR #8 spent five rounds killing. Their number goes in the message instead.
+  // The hint stays an EXAMPLE rather than a correction: any stop it suggested would be a trading
+  // decision (stop distance is the whole input this command sizes from), and on a small account a
+  // suggested stop can fail the position cap instead — relocating the error rather than resolving it.
+  // The caller's number goes in the message instead.
   if (riskPerShare === 0) {
     throw new MktError('usage', `entry and stop are both ${entry} — a stop must differ from entry, or there is no risk to size.`, EXAMPLE);
   }
@@ -40,33 +39,25 @@ export default async function size({ flags }) {
   // cap-bound result sent you in a circle: widening --risk changed nothing and the message didn't move.
   const byRisk = Math.floor(riskDollars / riskPerShare);
   const byCap = Math.floor(cap / entry);
-  // Both limits have to clear one share, so a hint that raises only the one that happened to fail just
-  // relocates the error to the next line. A single-flag suggestion is therefore offered ONLY when the
-  // other limit already passes; otherwise fall back to the account that satisfies both at once. The
-  // caller's own percentages are carried into every hint, since needAccount was derived from them and
-  // a hint that silently reverts them to the defaults is computed against different numbers than it runs.
-  // Validated here, above the sizing checks, for two reasons. `--target abc` used to be read only after
-  // sizing succeeded, so a sizing failure swallowed it entirely — the caller pasted the correction back,
-  // got a clean answer, and never learned their target was garbage. And a sizing hint can only carry the
-  // target forward if it is already known good; otherwise the rerun trades one error for another.
-  const target = flags.target != null ? num(flags.target, 'target', { positive: true }) : null;
-  // tgt defaults to the caller's own target, not null. With `target` in scope a null default would make
-  // "no target" and "forgot to pass the target" identical at the call site — which is exactly how the
-  // sizing hints came to drop it. Omission now carries it; only a deliberate override replaces it.
-  const hint = ({ risk = riskPct, cap: capFlag = maxPct, acct = null, target: tgt = target }) =>
-    `mkt size --entry ${entry} --stop ${stop}`
-    + (risk !== 1 ? ` --risk ${risk}` : '') + (capFlag !== 25 ? ` --max-pct ${capFlag}` : '')
-    + ((account !== 6000 || envAccount) && !acct ? ` --account ${account}` : '') + (acct ? ` --account ${acct}` : '')
-    + (tgt ? ` --target ${tgt}` : '');
-  // Signed, not Math.abs: a target on the losing side of the trade (below entry on a long, above it
-  // on a short) is a loss, and abs() reported it as profit with a positive R multiple.
-  const rewardPerShare = target == null ? null : (side === 'long' ? target - entry : entry - target);
-  // ceil() clears these thresholds in exact arithmetic, but the rerun rounds again — so a suggestion can
-  // land a hair under the very limit it was computed to clear, handing back a hint that reproduces the
-  // error. This is what profitable() already does for the target price; these three were the last places
-  // still asserting a rounding rather than checking it. A sweep of 37,496 hint-emitting inputs found 235
-  // that failed, the most ordinary being `--entry 1234.56 --stop 7000 --account 6000 --risk 1 --max-pct 1`,
-  // which suggested `--account 576544` and exited 2 on the rerun. None fail with the loop.
+
+  // A correction hint spells out EVERY resolved flag — no flag is ever omitted for being "at its
+  // default". Six review rounds across PR #8/#10 traced almost every hint bug to omission: each
+  // omitted flag needs its own copy of the default to compare against (a literal 6000 vs the real
+  // `$MKT_ACCOUNT || 6000`), every copy can silently diverge, and at the call site an omitted flag is
+  // indistinguishable from a forgotten one — which is exactly how sizing hints came to drop the
+  // caller's --target. Explicit kills the class: what the hint says is what the rerun parses, env or
+  // no env. Defaults here are the caller's own resolved values; a call site overrides only what it is
+  // deliberately correcting.
+  const hint = ({ risk = riskPct, cap: capFlag = maxPct, acct = account, target: tgt = target } = {}) =>
+    `mkt size --entry ${entry} --stop ${stop} --risk ${risk} --max-pct ${capFlag} --account ${acct}`
+    + (tgt != null ? ` --target ${tgt}` : '');
+
+  // ceil() clears these thresholds in exact arithmetic, but the rerun rounds again — so a suggestion
+  // can land a hair under the very limit it was computed to clear, handing back a hint that reproduces
+  // the error. This is what profitable() already does for the target price; these three were the last
+  // places still asserting a rounding rather than checking it. A sweep of 37,496 hint-emitting inputs
+  // found 235 that failed, the most ordinary being `--entry 1234.56 --stop 7000 --account 6000
+  // --risk 1 --max-pct 1`, which suggested `--account 576544` and exited 2 on the rerun.
   const clearsRisk = (r) => Math.floor(account * r / 100 / riskPerShare) >= 1;
   const clearsCap = (p) => Math.floor(account * p / 100 / entry) >= 1;
   // The account hint keeps the caller's own percentages, so it has to clear both limits at that rate.
@@ -75,15 +66,24 @@ export default async function size({ flags }) {
   const needRisk = bump(ceil2(riskPerShare / account * 100), 0.01, clearsRisk);
   const needPct = bump(Math.ceil(entry / account * 100), 1, clearsCap);
   const needAccount = bump(Math.ceil(Math.max(riskPerShare * 100 / riskPct, entry * 100 / maxPct)), 1, clearsBoth);
-  // The limit correction the sizing branches below would offer, computed once so the target error can
-  // carry it too. Without this a losing target on an input that also fails sizing gets a hint fixing
-  // only the target — the same "raised one limit, other still blocked" relocation the comment above
-  // warns about, on a third axis. null means no correction exists; EXAMPLE still runs.
+  // Both limits have to clear one share, so a hint that raises only the one that happened to fail just
+  // relocates the error to the next line. A single-flag suggestion is therefore offered ONLY when the
+  // other limit already passes; otherwise fall back to the account that satisfies both at the caller's
+  // own percentages — needAccount was derived from them, and a hint that silently reverts them to the
+  // defaults is computed against different numbers than it runs.
+  //
+  // Computed once, above the target throw, so the target error carries it too: without that, a losing
+  // target on an input that also fails sizing got a hint fixing only the target — the same relocation
+  // this rule forbids, on a third axis. null means no correction exists; EXAMPLE still runs.
   const sizingFix =
     byRisk >= 1 && byCap >= 1 ? {}
     : byRisk < 1 && byCap >= 1 && needRisk != null && needRisk <= 100 ? { risk: needRisk }
     : byRisk >= 1 && needPct != null && needPct <= 100 ? { cap: needPct }
     : needAccount != null ? { acct: needAccount } : null;
+
+  // Signed, not Math.abs: a target on the losing side of the trade (below entry on a long, above it
+  // on a short) is a loss, and abs() reported it as profit with a positive R multiple.
+  const rewardPerShare = target == null ? null : (side === 'long' ? target - entry : entry - target);
   if (target != null && rewardPerShare <= 0) {
     // A 2R target, floored at half the entry: on a short whose stop is wide relative to entry,
     // `entry - 2R` goes negative, and a suggested price below zero fails num() on the very next run.
@@ -92,8 +92,13 @@ export default async function size({ flags }) {
     // twoR is strictly on the profitable side by construction; only the rounding can break that, so
     // round against that inequality rather than at a chosen precision — see profitable() below.
     const better = (v) => (side === 'long' ? v > entry : v < entry);
+    // The hint may also raise a limit here, and --max-pct is the flag whose whole job is to cap
+    // exposure. Both sizing branches explain themselves when they move it; this one has to as well,
+    // or the user pastes back a command that quietly quadruples their position size.
+    const also = sizingFix && Object.keys(sizingFix).length
+      ? ' The position does not size at these limits either, so the hint corrects both.' : '';
     throw new MktError('usage',
-      `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.`,
+      `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.${also}`,
       sizingFix ? hint({ ...sizingFix, target: profitable(twoR, better) }) : EXAMPLE);
   }
   if (byRisk < 1) {
@@ -153,9 +158,11 @@ function bump(v, step, clears) {
   return clears(v) ? v : null;
 }
 
-// The shape of a valid invocation, shown when the caller's own numbers are unusable.
-// --account is pinned for the same reason hint() stopped omitting it: without it, this example
-// fails outright under an exported MKT_ACCOUNT too small to buy a share.
+// The shape of a valid invocation, shown when the caller's own numbers are unusable. Not fully
+// explicit like a correction hint — it teaches shape, not values — but --account is pinned because
+// that default alone is env-dependent: without it the example fails outright under an exported
+// MKT_ACCOUNT too small to buy a share. The risk and max-pct defaults are constants, so relying on
+// them cannot break the rerun.
 const EXAMPLE = 'mkt size --entry 50 --stop 47 --account 6000';
 
 const round = (x) => Math.round(x * 100) / 100;

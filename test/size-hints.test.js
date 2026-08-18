@@ -49,13 +49,12 @@ const flagsOf = (argv) => Object.fromEntries(
 );
 const hintArgv = (hint) => hint.split(/\s+/).slice(2);   // drop the leading `mkt size`
 
-// No local copy of size.js's defaults lives here. Every one of them is read back out of the rerun's
-// own output instead, because a copy cannot see the original change — which is the PR #8 bug shape
-// reappearing inside the suite built to catch it. `max_pct` was added to the output for exactly this
-// reason; it also answers "capped at what?" for anything parsing the JSON.
-
 // Correctable inputs: the numbers are well-formed, the combination just doesn't size. The hint is a
-// CORRECTION, so it has to carry the caller's own inputs forward.
+// CORRECTION, and a correction is FULLY EXPLICIT — it spells out every resolved flag. That is the
+// contract that killed the omission bug class: a hint that drops flags "at their default" needs a
+// local copy of each default to decide what to drop, every copy can diverge from the real resolution
+// (a literal 6000 vs `$MKT_ACCOUNT || 6000`), and an omitted flag is indistinguishable from a dropped
+// one. With all flags spelled out, what the hint says is literally what the rerun parses.
 const FAILING = [
   ['short, stop one cent-millionth away', ['--entry', '100', '--stop', '100.000001', '--target', '101']],
   ['long, stop one cent-millionth away', ['--entry', '100', '--stop', '99.999999', '--target', '99']],
@@ -69,13 +68,14 @@ const FAILING = [
   ['both limits below one share', ['--entry', '9000', '--stop', '100', '--account', '6000']],
   ['account too small for one share', ['--entry', '500', '--stop', '490', '--account', '100']],
   ['wide stop with a non-default risk to preserve', ['--entry', '100', '--stop', '7000', '--account', '6000', '--risk', '100', '--max-pct', '25']],
-  // --risk 1 is the default spelled out, so hint() omits it. That makes this the case that notices if
-  // size.js's real default and hint()'s omission literal ever stop agreeing.
+  // --risk 1 is the default spelled out. Under the old omission design this was the case that noticed
+  // hint()'s `risk !== 1` literal diverging from pct()'s fallback; it stays as the pin that a flag
+  // passed at its default still comes back explicit, not silently dropped.
   ['cap-bound with risk spelled out at its default', ['--entry', '5000', '--stop', '4999', '--account', '6000', '--risk', '1']],
-  // The same invocation with MKT_ACCOUNT set. --account 6000 is the literal hint() used to compare
-  // against, so this is the only shape where an omitted --account resolves to a different account on
-  // rerun — the account twin of the case above, except one of the two copies isn't a constant.
-  ['explicit account that matches the literal, with the env set',
+  // The same invocation with MKT_ACCOUNT exported. The old design omitted --account whenever the
+  // resolved value equalled its 6000 literal, so this exact shape re-resolved to 3000 on rerun and
+  // failed again. Explicit hints make it a non-event — which is what this row now pins.
+  ['explicit account equal to the old omission literal, with the env set',
     ['--entry', '5000', '--stop', '4999', '--account', '6000'], { MKT_ACCOUNT: '3000' }],
   // The two need* paths where ceil() lands a hair under the limit it was computed to clear. Found by
   // sweeping 37,496 hint-emitting inputs against the binary, not by inspection — the arithmetic is
@@ -95,6 +95,11 @@ const FAILING = [
     ['--entry', '5000', '--stop', '4999', '--account', '6000', '--target', '4000']],
   ['losing target alongside a risk-bound failure',
     ['--entry', '100', '--stop', '7000', '--account', '6000', '--target', '200']],
+  // target === entry is the boundary of the `rewardPerShare <= 0` predicate — what distinguishes it
+  // from `< 0`. The grid can't generate it (its targets are strict multiples of entry), and it's the
+  // twin of the `entry === stop` case that does have a row.
+  ['target exactly at entry, which is zero reward, not a small one',
+    ['--entry', '50', '--stop', '47', '--target', '50']],
 ];
 
 for (const [name, args, env] of FAILING) {
@@ -106,20 +111,16 @@ for (const [name, args, env] of FAILING) {
     const asked = flagsOf(args);
     const offered = flagsOf(hintArgv(failed.hint));
 
+    // The explicit-hint contract itself. This is what makes the value comparisons below sufficient:
+    // with no flag ever omitted, "what the hint offers" and "what the rerun resolves" cannot differ,
+    // so there is no default to copy and nothing for an exported MKT_ACCOUNT to silently rewrite.
+    for (const flag of ['entry', 'stop', 'risk', 'max-pct', 'account']) {
+      assert.ok(flag in offered, `hint omits --${flag}; a correction must spell out every resolved flag`);
+    }
+
     // Compared as flag sets, not strings: hint() emits a fixed flag order, so a string compare misses
     // a hint that is the failing command reordered.
     assert.notDeepEqual(offered, asked, 'hint is the failing command with its flags reordered');
-
-    // "Exits 0" alone is too weak on the target path: dropping --risk from a target hint still sizes
-    // successfully, just at 1% instead of the 100% the caller asked for — silently wrong, and green.
-    // So run the hint and read back what it ACTUALLY sized at, rather than recomputing what it should
-    // have. Asserting against a local copy of size.js's defaults cannot see those defaults change.
-    const rerun = run([...hintArgv(failed.hint), '--compact'], env);
-    assert.equal(rerun.code, 0, `hint does not resolve: ${failed.hint}\n${rerun.stderr}`);
-    const sized = JSON.parse(rerun.stdout);
-    const effective = {
-      account: sized.account, 'max-pct': sized.max_pct, risk: sized.risk_budget / sized.account * 100,
-    };
 
     for (const [flag, value] of Object.entries(asked)) {
       if (flag === 'target') {
@@ -130,14 +131,16 @@ for (const [name, args, env] of FAILING) {
         assert.equal(Number(offered[flag]), Number(value),
           `hint changed --${flag}, which is the caller's actual trade`);
       } else {
-        // risk is derived from two outputs that size.js rounds to 2dp, so it carries ~1/account of
-        // error. A fixed epsilon would be orders of magnitude tighter than the quantity it guards and
-        // would fire on a correct hint — e.g. --account 331 --risk 0.75 lands at 0.74924.
-        const slack = flag === 'risk' ? 1 / effective.account : 0;
-        assert.ok(effective[flag] >= Number(value) - slack,
-          `hint silently lowers --${flag}: asked ${value}, rerun actually used ${effective[flag]}`);
+        // "Exits 0" alone is too weak on the target path: a hint that lowered --risk from 100 to the
+        // default still sizes successfully, just at 1% of the account — silently wrong, and green.
+        assert.ok(Number(offered[flag]) >= Number(value),
+          `hint silently lowers --${flag}: asked ${value}, offered ${offered[flag]}`);
       }
     }
+
+    // The paste-back itself, under the same env the hint was issued in: one step, exit 0.
+    const rerun = run(hintArgv(failed.hint), env);
+    assert.equal(rerun.code, 0, `hint does not resolve: ${failed.hint}\n${rerun.stderr}`);
   });
 }
 
@@ -153,6 +156,8 @@ const INVALID = [
   // target was read only after sizing succeeded, so a sizing failure swallowed a garbage target whole.
   ['target that is not a number, alongside a sizing failure',
     ['--entry', '5000', '--stop', '4999', '--account', '6000', '--target', 'abc']],
+  // The zero-risk throw used to run before --target was read, so it swallowed a bad target too.
+  ['entry equals stop AND the target is garbage', ['--entry', '50', '--stop', '50', '--target', 'abc']],
   ['zero risk under an account the example would not clear',
     ['--entry', '412.5', '--stop', '412.5', '--account', '6000'], { MKT_ACCOUNT: '100' }],
 ];
@@ -176,7 +181,10 @@ test('every hint-emitting input in the grid resolves in one step', () => {
   const failures = [];
   // The target dimension is what lets the grid reach the losing-target throw — the one branch whose
   // hint carries no limit correction of its own, and therefore the one a targetless sweep cannot see.
-  // 331 was dropped from the accounts to pay for it; FAILING pins both need* paths directly anyway.
+  // 331 was dropped from the accounts to offset it, though only partly: 3 targets against 2 accounts is
+  // 600 combinations, net 2x the 300 it replaced. Worth it while the suite stays under a minute; if it
+  // ever needs trimming, the entry/stop lists are where the redundancy is (1.07/50 and 1/47 explore the
+  // same regime). FAILING pins both need* paths and the target === entry boundary directly regardless.
   for (const entry of [0.01, 1.07, 50, 1234.56, 9000])
     for (const stop of [0.0001, 1, 47, 4999, 7000])
       for (const account of [100, 6000])
@@ -212,13 +220,33 @@ test('a target on the profitable side reports R and profit', () => {
   assert.equal(out.profit_at_target, 120);
 });
 
+test('a hint that moves a limit says so, not just what was asked about', () => {
+  // The hint here raises --max-pct from 25 to 84 — a position 3.4x larger than the caller's own cap,
+  // on the one flag whose job is to prevent that. Nothing else in the suite can see a message: FAILING
+  // compares flags and exit codes, the grid checks exit 0.
+  const r = run(['--entry', '5000', '--stop', '4999', '--account', '6000', '--target', '4000']);
+  assert.match(r.stderr, /losing side/);
+  assert.match(r.stderr, /does not size at these limits/);
+  assert.match(r.hint, /--max-pct 84/);
+
+  // ...and a target error with no sizing problem does not claim one.
+  const plain = run(['--entry', '50', '--stop', '47', '--target', '40']);
+  assert.doesNotMatch(plain.stderr, /does not size at these limits/);
+});
+
 test('an unparseable --target is reported, not swallowed by a sizing failure', () => {
   // The INVALID tier alone cannot pin this: with target read after sizing, `--target abc` still exits 2
   // with a runnable hint — the CAP error — so the generic contract passes while the garbage evaporates.
   // Only naming the message distinguishes "an error happened" from "the right error happened".
-  const r = run(['--entry', '5000', '--stop', '4999', '--account', '6000', '--target', 'abc']);
-  assert.equal(r.code, 2);
-  assert.match(r.stderr, /--target must be a finite number/);
+  for (const args of [
+    ['--entry', '5000', '--stop', '4999', '--account', '6000', '--target', 'abc'],   // sizing failure
+    ['--entry', '50', '--stop', '50', '--target', 'abc'],                            // zero-risk failure
+  ]) {
+    const r = run(args);
+    assert.equal(r.code, 2);
+    assert.match(r.stderr, /--target must be a finite number/,
+      `a different error swallowed the bad target: mkt size ${args.join(' ')}`);
+  }
 });
 
 test('an empty MKT_ACCOUNT falls back to the default rather than failing', () => {

@@ -129,10 +129,13 @@ the user pastes back, so it must run. (Parser errors in `bin/mkt.js` are the del
 malformed argv has no command worth suggesting, so their hint is a flag *reference*, not a command.) Four distinct bugs hid in that gap (PR #8, five review rounds) — none
 visible by reading the code, all trivial to catch by executing the hint. The suite spawns the real CLI
 rather than importing `size()` for exactly that reason. Three tiers:
-- **correctable input** (well-formed numbers that just don't size) → the hint is a *correction*, so it
-  must carry the caller's flags forward. Exit-0-on-rerun is NOT sufficient here: dropping `--risk 100`
-  from a target hint still exits 0, silently sizing at 1%. Flags are compared as sets (hint emits a
-  fixed order) and every caller flag must survive or be raised, never lowered.
+- **correctable input** (well-formed numbers that just don't size) → the hint is a *correction* and is
+  **fully explicit**: it spells out every resolved flag, never omitting one "at its default". Omission
+  was the root of most of PR #8/#10's bugs — each omitted flag needs a local copy of its default to
+  compare against, the copies diverge (a literal `6000` vs the real `$MKT_ACCOUNT || 6000`), and an
+  omitted flag is indistinguishable from an accidentally dropped one. Caller flags must come back equal
+  or raised, never lowered; exit-0-on-rerun alone is NOT sufficient (dropping `--risk 100` still exits
+  0, silently sizing at 1%).
 - **malformed input** → the hint is an *example* of the right shape; it only has to differ and run.
 - **the grid** — a fixed sweep asserting only that a hint runs. Weaker than the first tier by design,
   but it covers inputs nobody wrote down: the two `ceil()` rounding bugs came out of a 37,496-input
