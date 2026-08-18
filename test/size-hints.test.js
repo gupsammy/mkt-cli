@@ -17,14 +17,34 @@ import { fileURLToPath } from 'node:url';
 // parse as one.
 const BIN = fileURLToPath(new URL('../bin/mkt.js', import.meta.url));
 
+// size.js falls back to $MKT_ACCOUNT when --account is absent, and spawnSync inherits the parent env,
+// so an exported value would silently rewrite every expectation here. CLAUDE.md has this repo setting
+// mkt env vars in launchd plists, which makes a developer with it exported the normal case, not an
+// exotic one — and a suite that is green in CI and red on one machine is the confusion a pinning
+// suite exists to prevent.
+const ENV = { ...process.env };
+delete ENV.MKT_ACCOUNT;
+
 function run(args) {
-  const r = spawnSync(process.execPath, [BIN, 'size', ...args], { encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [BIN, 'size', ...args], { encoding: 'utf8', env: ENV });
   const hint = (r.stderr.match(/^hint:\s+(.+)$/m) ?? [])[1]?.trim() ?? null;
   return { code: r.status, stdout: r.stdout, stderr: r.stderr, hint };
 }
 
-// Each case fails on purpose. The invariants are the same for all of them, so they are asserted
-// together rather than per-case: a case that starts succeeding is itself a regression worth failing on.
+// Every flag in this command takes a value, so pairing is enough. NOTE for anyone extending this to
+// other commands: hints elsewhere carry quoted expressions with spaces (`--where 'RSI < 30'`), and
+// splitting those on whitespace produces a rerun that fails for reasons unrelated to the hint. That
+// needs a quote-aware tokenizer, deliberately not written here because nothing would exercise it yet.
+const flagsOf = (argv) => Object.fromEntries(
+  argv.reduce((pairs, tok, i) => (i % 2 ? pairs : [...pairs, [tok.replace(/^--/, ''), argv[i + 1]]]), []),
+);
+const hintArgv = (hint) => hint.split(/\s+/).slice(2);   // drop the leading `mkt size`
+
+// What the rerun falls back to for any flag the hint chose to omit.
+const DEFAULTS = { account: 6000, risk: 1, 'max-pct': 25 };
+
+// Correctable inputs: the numbers are well-formed, the combination just doesn't size. The hint is a
+// CORRECTION, so it has to carry the caller's own inputs forward.
 const FAILING = [
   ['short, stop one cent-millionth away', ['--entry', '100', '--stop', '100.000001', '--target', '101']],
   ['long, stop one cent-millionth away', ['--entry', '100', '--stop', '99.999999', '--target', '99']],
@@ -41,16 +61,54 @@ const FAILING = [
 ];
 
 for (const [name, args] of FAILING) {
-  test(`hint resolves in one step: ${name}`, () => {
+  test(`hint corrects in one step: ${name}`, () => {
     const failed = run(args);
     assert.equal(failed.code, 2, `expected a usage failure\n${failed.stderr}`);
     assert.ok(failed.hint, `no hint offered\n${failed.stderr}`);
 
-    // A hint identical to the command that just failed is an infinite loop, not a suggestion.
-    assert.notEqual(failed.hint, `mkt size ${args.join(' ')}`, 'hint reproduces the failing command');
+    const asked = flagsOf(args);
+    const offered = flagsOf(hintArgv(failed.hint));
 
-    const rerun = run(failed.hint.split(/\s+/).slice(2));   // drop the leading `mkt size`
-    assert.equal(rerun.code, 0, `hint does not resolve: ${failed.hint}\n${rerun.stderr}`);
+    // Compared as flag sets, not strings: hint() emits a fixed flag order, so a string compare misses
+    // a hint that is the failing command reordered.
+    assert.notDeepEqual(offered, asked, 'hint is the failing command with its flags reordered');
+
+    // "Exits 0" alone is too weak on the target path: dropping --risk from a target hint still sizes
+    // successfully, just at 1% instead of the 100% the caller asked for — silently wrong, and green.
+    // So pin the direction of every caller flag the hint isn't deliberately raising.
+    for (const [flag, value] of Object.entries(asked)) {
+      if (flag === 'target') {
+        assert.ok('target' in offered, 'hint dropped --target instead of moving it to a profitable price');
+      } else if (flag === 'entry' || flag === 'stop') {
+        assert.equal(offered[flag], value, `hint changed --${flag}, which is the caller's actual trade`);
+      } else {
+        const onRerun = flag in offered ? Number(offered[flag]) : DEFAULTS[flag];
+        assert.ok(onRerun >= Number(value),
+          `hint silently lowers --${flag}: asked ${value}, rerun would use ${onRerun}`);
+      }
+    }
+
+    assert.equal(run(hintArgv(failed.hint)).code, 0, `hint does not resolve: ${failed.hint}`);
+  });
+}
+
+// Malformed inputs: there is nothing to carry forward, so the hint is an EXAMPLE of the right shape
+// rather than a correction. Weaker contract, but it still has to run — a typo in a canned hint string
+// ships silently and hands the user a command that reproduces an error.
+const INVALID = [
+  ['entry is not a number', ['--entry', 'abc', '--stop', '47']],
+  ['risk above 100 percent', ['--entry', '50', '--stop', '47', '--risk', '200']],
+  ['stop missing entirely', ['--entry', '50']],
+  ['entry equals stop (zero risk per share)', ['--entry', '50', '--stop', '50']],
+];
+
+for (const [name, args] of INVALID) {
+  test(`example hint runs: ${name}`, () => {
+    const failed = run(args);
+    assert.equal(failed.code, 2, `expected a usage failure\n${failed.stderr}`);
+    assert.ok(failed.hint, `validation error offers no hint at all\n${failed.stderr}`);
+    assert.notDeepEqual(flagsOf(hintArgv(failed.hint)), flagsOf(args), 'hint reproduces the failing command');
+    assert.equal(run(hintArgv(failed.hint)).code, 0, `hint does not run: ${failed.hint}`);
   });
 }
 

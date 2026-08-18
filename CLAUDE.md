@@ -125,9 +125,18 @@ The SQLite query layer (Phase 2) is **built** — see "The recorder + DB" above.
 better-sqlite3 included.
 
 `test/size-hints.test.js` asserts the **hint contract**: every error hint is a command line the user
-pastes back, so it must differ from the command that just failed AND exit 0 when run verbatim. Naming
-the failing constraint is not enough. Four distinct bugs hid in that gap (PR #8, five review rounds) —
-none visible by reading the code, all trivial to catch by executing the hint. The suite spawns the real
-CLI rather than importing `size()` for exactly that reason. Extend it whenever a command grows a hint.
+pastes back, so it must run. Four distinct bugs hid in that gap (PR #8, five review rounds) — none
+visible by reading the code, all trivial to catch by executing the hint. The suite spawns the real CLI
+rather than importing `size()` for exactly that reason. Two tiers:
+- **correctable input** (well-formed numbers that just don't size) → the hint is a *correction*, so it
+  must carry the caller's flags forward. Exit-0-on-rerun is NOT sufficient here: dropping `--risk 100`
+  from a target hint still exits 0, silently sizing at 1%. Flags are compared as sets (hint emits a
+  fixed order) and every caller flag must survive or be raised, never lowered.
+- **malformed input** → the hint is an *example* of the right shape; it only has to differ and run.
+
+The suite clears `$MKT_ACCOUNT` before spawning — `size` falls back to it, so an exported value would
+rewrite every expectation. Extend it whenever a command grows a hint; note the argv splitter is
+whitespace-only, and hints elsewhere carry quoted expressions (`--where 'RSI < 30'`) that need a
+quote-aware tokenizer first.
 
 Full design spec: `../trading-experiments/docs/mkt-cli-spec.md`.

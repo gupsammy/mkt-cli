@@ -19,7 +19,11 @@ export default async function size({ flags }) {
   const maxPct = pct(flags['max-pct'], 'max-pct', 25);
 
   const riskPerShare = Math.abs(entry - stop);
-  if (riskPerShare === 0) throw new MktError('usage', 'entry and stop cannot be equal (zero risk/share).', null);
+  // Every other failure in this command hands back a runnable command; this one used to hand back null,
+  // which made "a size error always offers a way forward" an invariant with one silent exception.
+  if (riskPerShare === 0) {
+    throw new MktError('usage', 'entry and stop cannot be equal (zero risk/share).', 'mkt size --entry 50 --stop 47');
+  }
   const side = stop < entry ? 'long' : 'short';
 
   const riskDollars = account * riskPct / 100;
