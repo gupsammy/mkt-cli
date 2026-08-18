@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
  * mkt — agent-first CLI for TradingView market + macro data.
- * Router + global flags. Each command lives in src/commands/*.
+ * Router + strict flag parsing. Each command lives in src/commands/*.
  */
 import { printError } from '../src/output.js';
-import { MktError } from '../src/providers/tradingview.js';
+import { MktError } from '../src/errors.js';
 
 import screen from '../src/commands/screen.js';
 import history from '../src/commands/history.js';
@@ -23,28 +23,69 @@ import backup from '../src/commands/backup.js';
 const COMMANDS = { screen, history, quote, search, fields, regions, record, ingest, sql, alert, size, watchlist, backup };
 const VERSION = '0.1.0';
 
-// Flags that consume the next token as a value; everything else is boolean. --where repeats.
-const VALUE_FLAGS = new Set(['region', 'columns', 'sort', 'limit', 'tf', 'bars', 'category', 'search', 'type', 'out', 'sql', 'kind',
-  'entry', 'stop', 'account', 'risk', 'max-pct', 'target', 'watchlist', 'to']);
-const REPEATABLE = new Set(['where']);
+// Per-command flag contract. Anything not declared here (or global) is rejected: a typo'd flag
+// must fail loudly, not silently become boolean `true` while its value leaks into positionals —
+// unacceptable once flags carry money numbers (`mkt size --entry`, the future `mkt trade`).
+const GLOBAL = new Set(['json', 'compact', 'quiet', 'verbose', 'help', 'version', 'no-color']);
+const SHORT = { j: 'json', c: 'compact', q: 'quiet', v: 'verbose', h: 'help' };
+const SPEC = {
+  screen:    { value: ['region', 'columns', 'sort', 'limit', 'watchlist'], repeat: ['where'], bool: ['liquid'] },
+  history:   { value: ['tf', 'bars'] },
+  quote:     { value: ['region'] },
+  search:    { value: ['type', 'region'] },
+  fields:    { value: ['region', 'category', 'search'] },
+  regions:   {},
+  record:    { value: ['region', 'columns'], bool: ['force'] },
+  ingest:    { value: ['region'], bool: ['all', 'prune'] },
+  sql:       {},
+  alert:     { value: ['region', 'kind', 'sql'], repeat: ['where'], bool: ['dry-run'] },
+  size:      { value: ['entry', 'stop', 'account', 'risk', 'max-pct', 'target'] },
+  watchlist: { value: ['kind'] },
+  backup:    { value: ['to'] },
+};
 
+// The command is the first bare token — global flags (all boolean, so they consume nothing) may
+// precede it; command flags may not, since a value flag there would swallow the command name.
+// An unknown command parses loose so "Unknown command" wins over any flag complaint.
 function parse(argv) {
+  const cmdIdx = argv.findIndex((a) => !a.startsWith('-') || /^-\d/.test(a));
+  const cmd = cmdIdx >= 0 ? argv[cmdIdx] : undefined;
+  const spec = cmd != null && Object.hasOwn(SPEC, cmd) ? SPEC[cmd] : null;
+  const value = new Set(spec?.value || []);
+  const repeat = new Set(spec?.repeat || []);
+  const local = new Set([...(spec?.bool || []), ...value, ...repeat]);
+  const usage = (msg) => {
+    const valid = [...local].map((f) => '--' + f).sort().join(' ') || '(none)';
+    throw new MktError('usage', msg, `${cmd} flags: ${valid}  (global: --json --compact -q -v -h)`);
+  };
+
   const positionals = [];
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
+    if (i === cmdIdx) continue;
     const a = argv[i];
     if (a.startsWith('--')) {
       let key = a.slice(2), val = true;
       const eq = key.indexOf('=');
       if (eq >= 0) { val = key.slice(eq + 1); key = key.slice(0, eq); }
-      else if (VALUE_FLAGS.has(key) || REPEATABLE.has(key)) { val = argv[++i]; }
-      if (REPEATABLE.has(key)) (flags[key] ||= []).push(val);
+      if (spec) {
+        if (!local.has(key) && !GLOBAL.has(key)) usage(`Unknown flag --${key} for "${cmd}".`);
+        if (eq >= 0 && !value.has(key) && !repeat.has(key)) usage(`--${key} takes no value.`);
+        if (eq < 0 && (value.has(key) || repeat.has(key))) {
+          if (i + 1 >= argv.length) usage(`--${key} needs a value.`);
+          val = argv[++i];
+        }
+      }
+      if (repeat.has(key)) (flags[key] ||= []).push(val);
       else flags[key] = val;
     } else if (a.startsWith('-') && a.length > 1 && !/^-\d/.test(a)) {
-      for (const ch of a.slice(1)) flags[{ j: 'json', c: 'compact', q: 'quiet', v: 'verbose', h: 'help' }[ch] || ch] = true;
+      for (const ch of a.slice(1)) {
+        if (!SHORT[ch]) { if (spec) usage(`Unknown flag -${ch}.`); flags[ch] = true; continue; }
+        flags[SHORT[ch]] = true;
+      }
     } else positionals.push(a);
   }
-  return { positionals, flags };
+  return { cmd, positionals, flags };
 }
 
 const HELP = `mkt — extract TradingView market + macro data as JSON.
@@ -60,7 +101,8 @@ COMMANDS
   fields    Column catalog:     mkt fields --category technicals --search rsi
   regions   List universes:     mkt regions
   record    Append daily snapshot to ~/.mkt/snapshots/<region>/<date>.ndjson.gz
-  ingest    Load snapshots into ~/.mkt/mkt.db (SQLite); --prune (deprecated — gz is kept forever)
+            (refuses pre-close NY time — would mislabel the previous session; --force overrides)
+  ingest    Load NEW snapshots into ~/.mkt/mkt.db (incremental; --all = full replay; --prune deprecated)
   backup    Mirror gz archive + a consistent DB dump to durable storage (default iCloud) [--to DIR]
   sql       Query the panel:     mkt sql "SELECT symbol,RSI FROM snapshots WHERE RSI<30"
   alert     Edge-triggered alerts: add <name> --where '<expr>' (live) | --sql "<SELECT>" (panel)
@@ -70,16 +112,19 @@ COMMANDS
             scope a screen to one: mkt screen --watchlist my-semis --where 'RSI<40'
 
 GLOBAL  --json (NDJSON lists) · --compact · -q/--quiet · -v/--verbose · --no-color · --version
+        Flags are strict: an undeclared flag is a usage error (exit 2), never silently boolean.
 FILTER  RSI < 30 · close > SMA200 (col-vs-col) · RSI between 55,72 · typespecs has common · RSI|60 < 30 (intraday)
 Data delayed ~15m (free). Not affiliated with TradingView. Undocumented endpoints — may break.`;
 
 async function main() {
   const argv = process.argv.slice(2);
-  const { positionals, flags } = parse(argv);
-  const cmd = positionals.shift();
+  const jsonish = argv.some((a) => a === '--json' || a === '--compact' || a === '-j' || a === '-c');
+  let cmd, positionals, flags;
+  try { ({ cmd, positionals, flags } = parse(argv)); }
+  catch (err) { return printError(err, { json: jsonish }); }
 
   if (flags.version) { process.stdout.write(VERSION + '\n'); return 0; }
-  if (!cmd || flags.help && !cmd || cmd === 'help') { process.stdout.write(HELP + '\n'); return 0; }
+  if (!cmd || cmd === 'help') { process.stdout.write(HELP + '\n'); return 0; }
   if (!COMMANDS[cmd]) {
     return printError(new MktError('usage', `Unknown command "${cmd}".`, 'mkt help'), { json: flags.json });
   }
