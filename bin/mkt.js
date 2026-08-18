@@ -72,7 +72,10 @@ function parse(argv) {
         if (!local.has(key) && !GLOBAL.has(key)) usage(`Unknown flag --${key} for "${cmd}".`);
         if (eq >= 0 && !value.has(key) && !repeat.has(key)) usage(`--${key} takes no value.`);
         if (eq < 0 && (value.has(key) || repeat.has(key))) {
-          if (i + 1 >= argv.length) usage(`--${key} needs a value.`);
+          // A following `--flag` is a missing value, not a value: `backup --to --quiet` must not
+          // create a directory named "--quiet" and report a durable backup that never left cwd.
+          // Only `--` is rejected — a single dash stays a value (`--sort -change` is documented).
+          if (i + 1 >= argv.length || argv[i + 1].startsWith('--')) usage(`--${key} needs a value.`);
           val = argv[++i];
         }
       }

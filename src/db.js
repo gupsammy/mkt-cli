@@ -109,8 +109,13 @@ function migrate(db) {
         SELECT 1 FROM alert_hits h2
          WHERE h2.alert_id = alert_hits.alert_id AND h2.symbol = alert_hits.symbol
            AND h2.departed IS NULL AND h2.first_seen < alert_hits.first_seen)`).run().changes;
+    // Deliberately not gated on --quiet (openDb has no flags): this rewrites alert history once,
+    // ever, and that must be on the record wherever stderr went.
     if (repaired) process.stderr.write(`# repaired ${repaired} duplicate active alert stint(s) — closed as degenerate\n`);
-    db.exec(`CREATE UNIQUE INDEX idx_alert_hits_active
+    // IF NOT EXISTS despite the gate: the gate read and this write are not one transaction, so
+    // two writable opens in the migration window (nightly ingest vs 15-min alert check — the very
+    // concurrency this index defends against) can both get here; the loser must not throw.
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_hits_active
       ON alert_hits(alert_id, symbol) WHERE departed IS NULL;`);
   }
 

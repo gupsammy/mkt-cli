@@ -46,7 +46,15 @@ export default async function record({ flags }) {
   // one. If ~every symbol's close is identical to the newest already-recorded day, this is that
   // day again: refuse rather than write a phantom session the panel would read as 0% change.
   if (!flags.force && columns.includes('close')) {
-    const { ratio, prev, compared } = await sameCloseRatio(dir, date, rows);
+    // The guard must never COST a session: a corrupt/truncated baseline (bad gz, malformed line)
+    // is treated as no baseline. Worst case of proceeding is a visible, deletable phantom day;
+    // worst case of throwing here is a session that exists nowhere — the scanner has no "as of".
+    let ratio = 0, prev = null, compared = 0;
+    try {
+      ({ ratio, prev, compared } = await sameCloseRatio(dir, date, rows));
+    } catch (e) {
+      if (!flags.quiet) process.stderr.write(`# staleness guard skipped: could not read baseline (${e.message})\n`);
+    }
     // compared >= 100: a thin previous file (narrow --columns, truncation) could make a handful
     // of matches read as 100% and block a real session with only --force as the escape.
     if (ratio > 0.99 && compared >= 100) {
