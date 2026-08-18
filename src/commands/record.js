@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import zlib from 'node:zlib';
 import { scan, fieldSet } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { validateColumns } from '../filter.js';
 import { todayFor } from '../tzdate.js';
 import { printObject } from '../output.js';
@@ -11,6 +12,21 @@ import { WIDE } from '../schema.js';   // shared with db.js so disk NDJSON and S
 export default async function record({ flags }) {
   const region = flags.region || 'america';
   const columns = flags.columns ? flags.columns.split(',').map((s) => s.trim()) : WIDE;
+
+  // Freshness guard (the day-one incident): this machine's clock is not the market's, and the
+  // scanner has no "as of" — recording before the NY close stores the PREVIOUS session under
+  // today's date, permanently. Equities only; --force asserts the label is right anyway.
+  if (region === 'america' && !flags.force) {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', hourCycle: 'h23', weekday: 'short', hour: '2-digit', minute: '2-digit',
+    }).formatToParts(new Date()).map((x) => [x.type, x.value]));
+    const closed = !['Sat', 'Sun'].includes(p.weekday) && `${p.hour}:${p.minute}` >= '16:05';
+    if (!closed) {
+      throw new MktError('conflict',
+        `NY time is ${p.weekday} ${p.hour}:${p.minute} — the session dated ${todayFor(region)} hasn't closed; recording now would store the previous session under that date.`,
+        'run after 16:05 ET, or mkt record --force if the label is truly right');
+    }
+  }
 
   const fs2 = await fieldSet(region);
   validateColumns(new Set(columns), fs2);   // D2
@@ -29,7 +45,7 @@ export default async function record({ flags }) {
   const out = fs.createWriteStream(file);
   gzip.pipe(out);
   for (const r of rows) {
-    gzip.write(JSON.stringify({ date, symbol: r.s, ...Object.fromEntries(columns.map((c, i) => [c, r.d[i]])) }) + '\n');
+    gzip.write(JSON.stringify({ date, ...r }) + '\n');   // r = {symbol, <column>: value}
   }
   await new Promise((res, rej) => { out.on('close', res); out.on('error', rej); gzip.end(); });
 
