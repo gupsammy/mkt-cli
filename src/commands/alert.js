@@ -1,5 +1,6 @@
 import { openDb } from '../db.js';
-import { scan, fieldSet, MktError } from '../providers/tradingview.js';
+import { scan, fieldSet } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { parseWhere, validateColumns } from '../filter.js';
 import { notify } from '../notify.js';
 import { printRows, printObject } from '../output.js';
@@ -42,7 +43,7 @@ async function add(db, name, flags) {
     kind = 'panel';
     if (!/^\s*(select|with)\b/i.test(sql)) throw new MktError('usage', 'Panel --sql must be a SELECT/WITH query.', null);
     if (!/\bsymbol\b/i.test(sql)) throw new MktError('usage', 'Panel --sql must return a `symbol` column (edge-trigger keys on it).', null);
-    db.prepare(sql).all();                       // validate it runs (throws → caught by router)
+    preparePanel(db, sql).all();                 // validate it runs (throws → caught by router)
     query = sql;
   } else {
     kind = 'live';
@@ -66,7 +67,7 @@ async function add(db, name, flags) {
 function list(db, flags) {
   const rows = db.prepare(
     `SELECT a.name, a.kind, a.region, a.enabled,
-            (SELECT COUNT(*) FROM alert_hits h WHERE h.alert_id=a.id) AS watching, a.query
+            (SELECT COUNT(*) FROM alert_hits h WHERE h.alert_id=a.id AND h.departed IS NULL) AS watching, a.query
        FROM alerts a ORDER BY a.name`).all();
   printRows(rows, flags);
   return 0;
@@ -89,8 +90,9 @@ async function test(db, name, flags) {
   return 0;
 }
 
-// The loop: for each enabled alert, diff live/current matches vs alert_hits, push NEW entrants,
-// update state. --kind live|panel filters (launchd runs live 15m, panel daily). --dry-run: no push/no write.
+// The loop: for each enabled alert, diff live/current matches vs the ACTIVE alert_hits stints,
+// push NEW entrants, update state. --kind live|panel filters (launchd runs live 15m, panel daily).
+// --dry-run: no push/no write.
 async function check(db, flags) {
   const dry = flags['dry-run'];
   const kindFilter = flags.kind;
@@ -99,8 +101,11 @@ async function check(db, flags) {
     .all(...(kindFilter ? [kindFilter] : []));
 
   const addHit = db.prepare(`INSERT OR IGNORE INTO alert_hits (alert_id, symbol, first_seen) VALUES (?,?,?)`);
-  const dropHit = db.prepare(`DELETE FROM alert_hits WHERE alert_id=? AND symbol=?`);
+  // Append-only: a departure CLOSES the stint (stamps departed), never deletes it — the entry/exit
+  // history is exactly what forward-eval (spec §11) replays. Re-entry inserts a fresh stint.
+  const closeHit = db.prepare(`UPDATE alert_hits SET departed=? WHERE alert_id=? AND symbol=? AND departed IS NULL`);
   const summary = [];
+  let errored = 0;
 
   for (const a of alerts) {
     let rows;
@@ -109,10 +114,12 @@ async function check(db, flags) {
     } catch (e) {
       process.stderr.write(`# alert "${a.name}" errored: ${e.message}\n`);
       summary.push({ alert: a.name, error: e.message });
+      errored++;
       continue;
     }
     const current = new Set(rows.map((r) => r.symbol));
-    const last = new Set(db.prepare(`SELECT symbol FROM alert_hits WHERE alert_id=?`).all(a.id).map((r) => r.symbol));
+    const last = new Set(db.prepare(`SELECT symbol FROM alert_hits WHERE alert_id=? AND departed IS NULL`)
+      .all(a.id).map((r) => r.symbol));
     const entered = [...current].filter((s) => !last.has(s));
     const gone = [...last].filter((s) => !current.has(s));
 
@@ -124,7 +131,7 @@ async function check(db, flags) {
       const ts = now();
       const tx = db.transaction(() => {
         for (const s of entered) addHit.run(a.id, s, ts);
-        for (const s of gone) dropHit.run(a.id, s);
+        for (const s of gone) closeHit.run(ts, a.id, s);
       });
       tx();
     }
@@ -133,7 +140,9 @@ async function check(db, flags) {
 
   if (!flags.quiet) process.stderr.write(`# checked=${alerts.length}${dry ? ' (dry-run)' : ''}\n`);
   for (const s of summary) printRows([s], flags);
-  return 0;
+  // A failed alert must not exit 0 forever — the scheduler's log line on a non-zero exit is the
+  // only place a broken query ever surfaces. The healthy alerts above still ran and notified.
+  return errored ? 1 : 0;
 }
 
 function getAlert(db, name) {
@@ -143,15 +152,25 @@ function getAlert(db, name) {
   return a;
 }
 
+// Prepare panel SQL and prove it read-only. The ^SELECT/WITH regex is a friendly first gate, but
+// `WITH x AS (...) DELETE ... RETURNING symbol` sails past it — and this statement runs on the
+// writable alert connection. stmt.readonly is the driver's own verdict, so it is the gate.
+function preparePanel(db, sql) {
+  const stmt = db.prepare(sql);   // throws on bad SQL → usage error upstream
+  if (!stmt.readonly) throw new MktError('usage', 'Panel --sql must be read-only (no INSERT/UPDATE/DELETE).', null);
+  return stmt;
+}
+
 // The current matching set for an alert. live → live scanner; panel → SQL over the DB.
 // Both return objects carrying at least `symbol`.
 async function currentRows(db, a) {
   if (a.kind === 'panel') {
-    return db.prepare(a.query).all();            // guaranteed SELECT + symbol col at add time
+    // Re-proved at fire time, not just add time — the stored query is editable outside this CLI.
+    return preparePanel(db, a.query).all();
   }
   const fs = await fieldSet(a.region);
   const { filter, cols } = parseWhere(a.query.split('\n'), fs);
   validateColumns(new Set(['name', ...cols]), fs);
   const { rows } = await scan({ region: a.region, columns: ['name'], filter, range: [0, ALERT_MAX] });
-  return rows.map((r) => ({ symbol: r.s, name: r.d[0] }));
+  return rows;   // provider returns {symbol, name}
 }
