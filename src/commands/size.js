@@ -171,8 +171,8 @@ function pct(v, name, fallback) {
 // only the final rounding is ever short: across 112,488 need* evaluations the measured maximum was ONE
 // step and nothing failed to clear. Returns null rather than a value the caller just proved doesn't
 // clear — handing that back would emit a hint reproducing its own error, the thing this exists to stop.
-// (profitable() looks identical but returns its input, which is earned: 17 significant digits round-trip
-// any double, so its fallthrough is unreachable by construction rather than by measurement.)
+// (profitable() returns null on the same principle; both helpers answer "no suggestion exists" the
+// same way, though its gate is for an unrepresentable input rather than a rounding that fell short.)
 function bump(v, step, clears) {
   // A denormal --risk (5e-324 parses as a positive finite number) overflows the account suggestion
   // to Infinity, and clears(Infinity) is trivially true — so without this gate the hint says

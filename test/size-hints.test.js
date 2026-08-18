@@ -116,7 +116,7 @@ for (const [name, args, env] of FAILING) {
     // the explicitness loop so the red says what happened instead of misreporting "hint omits --risk".
     if (/the hint is an example, not a correction/.test(failed.stderr)) {
       assert.equal(run(hintArgv(failed.hint), env).code, 0, `example hint does not run: ${failed.hint}`);
-      assert.fail(`no sizing correction exists for a correctable input: mkt size ${args.join(' ')}`);
+      assert.fail(`downgraded to the example tier: mkt size ${args.join(' ')}\n${failed.stderr.trim()}`);
     }
 
     const asked = flagsOf(args);
@@ -221,9 +221,10 @@ test('every hint-emitting input in the grid resolves in one step', () => {
   // The target dimension is what lets the grid reach the losing-target throw — the one branch whose
   // hint carries no limit correction of its own, and therefore the one a targetless sweep cannot see.
   // 331 was dropped from the accounts to offset it, though only partly: 3 targets against 2 accounts is
-  // 600 combinations, net 2x the 300 it replaced. Worth it while the suite stays under a minute; if it
-  // ever needs trimming, the entry/stop lists are where the redundancy is (1.07/50 and 1/47 explore the
-  // same regime). FAILING pins both need* paths and the target === entry boundary directly regardless.
+  // 600 combinations, and the denormal risk row takes it to 750 — 2.5x the 300 it replaced. Worth it
+  // while the suite stays under a minute; if it ever needs trimming, the entry/stop lists are where the
+  // redundancy is (1.07/50 and 1/47 explore the same regime). FAILING pins both need* paths, the
+  // target === entry boundary and both overflow endpoints directly regardless.
   for (const entry of [0.01, 1.07, 50, 1234.56, 9000])
     for (const stop of [0.0001, 1, 47, 4999, 7000])
       for (const account of [100, 6000])
