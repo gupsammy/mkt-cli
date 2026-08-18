@@ -69,12 +69,13 @@ export default async function size({ flags }) {
       // A 2R target, floored at half the entry: on a short whose stop is wide relative to entry,
       // `entry - 2R` goes negative, and a suggested price below zero fails num() on the very next run.
       // The floored branch is no longer 2R — it is just the nearest sane target that is still a profit.
-      // Significant digits, not 2dp: round(0.005) is 0.01, which on a $0.01 short lands back ON entry
-      // and hands you a hint that reproduces this error verbatim.
       const twoR = side === 'long' ? entry + riskPerShare * 2 : Math.max(entry - riskPerShare * 2, entry / 2);
+      // twoR is strictly on the profitable side by construction; only the rounding can break that, so
+      // round against that inequality rather than at a chosen precision — see profitable() below.
+      const better = (v) => (side === 'long' ? v > entry : v < entry);
       throw new MktError('usage',
         `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.`,
-        hint({ target: sig(twoR) }));
+        hint({ target: profitable(twoR, better) }));
     }
     out.reward_risk = round(rewardPerShare / riskPerShare);
     out.profit_at_target = round(shares * rewardPerShare);
@@ -105,6 +106,17 @@ function pct(v, name, fallback) {
 const round = (x) => Math.round(x * 100) / 100;
 // Round UP to 2dp: a suggested percentage has to clear the threshold, not land just under it.
 const ceil2 = (x) => Math.ceil(x * 100) / 100;
-// Enough significant digits to survive sub-cent prices: a 2dp round would collapse a $0.005 target to
-// $0.01, and on a $0.01 short that is the entry itself.
-const sig = (x) => Number(x.toPrecision(6));
+// Shortest rendering of a suggested price that is still strictly on the profitable side of entry.
+// No fixed precision can do this, because both failure modes are real: 2 decimals collapse a $0.005
+// target to $0.01 (the entry itself, on a penny short), while 6 significant digits collapse
+// entry+0.000002 back to 100 (the entry itself, on a tight stop). Both hand back a hint that
+// reproduces the very error it is meant to resolve. So widen until the inequality actually holds:
+// 17 significant digits round-trips any double exactly, and String(x) is exact regardless, so the
+// loop always terminates on a value that passes.
+function profitable(x, ok) {
+  for (let p = 3; p <= 17; p++) {
+    const v = Number(x.toPrecision(p));
+    if (ok(v)) return v;
+  }
+  return x;
+}
