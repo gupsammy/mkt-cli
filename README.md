@@ -22,7 +22,9 @@ mkt fields --category margins                          # curated columns per cat
 mkt regions --json
 mkt record --region america                            # append today's wide snapshot → NDJSON
 mkt ingest --region america                            # load snapshots → ~/.mkt/mkt.db
+                                                       # (--no-notify: the wrapper owns the alert)
 mkt backup                                             # mirror gz archive + DB dump → iCloud [--to DIR]
+mkt notify --title=mkt-record --body="backup failed"   # scheduler bridge → the configured sinks
 mkt sql "SELECT symbol,RSI FROM snapshots WHERE date=(SELECT max(date) FROM snapshots) AND RSI<30" --json
 mkt alert add oversold --where 'RSI<30' --where 'market_cap_basic>1e9'  # live edge-triggered alert
 mkt alert check --kind live --dry-run                  # run alerts, show new entrants, no push
@@ -45,7 +47,8 @@ Operators: `< <= > >= = != between has`. OR/nested groups are Phase 2.
 ## Output & exit codes
 - Human table by default; `--json` = NDJSON (lists) / JSON (scalars); `--compact` = minified.
 - Data → stdout, diagnostics → stderr.
-- `0` ok · `1` generic · `2` usage/bad-filter/bad-column · `3` not-found · `4` auth · `5` upstream.
+- `0` ok · `1` generic/partial · `2` usage/bad-filter/bad-column · `3` not-found/unknown-symbol ·
+  `4` auth · `5` upstream · `7` conflict.
 - With `--json`, errors are `{"error","message","hint"}` on stderr; `hint` is an executable command.
 
 ## Data recording + the panel (the point)
