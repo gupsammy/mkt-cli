@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Agent-first CLI to extract TradingView market + macro data (snapshots + history) as JSON.",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "bin": {
     "mkt": "bin/mkt.js"
   },

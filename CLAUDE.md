@@ -122,7 +122,14 @@ The SQLite query layer (Phase 2) is **built** — see "The recorder + DB" above.
 `npm test` — bare `node --test` (a positional path is a glob in Node >=22, not a directory, so
 `node --test test/` matches nothing and silently "passes"). CI runs it on every PR
 (`.github/workflows/test.yml`); it needs `npm ci` because `bin/mkt.js` imports every command eagerly,
-better-sqlite3 included.
+better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for those discovery
+semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
+Node < 20.10 silently ignores (no fsync, no error).
+
+Three suites: `size-hints` (the hint contract, below), `record-staged-write` (record's
+stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
+cases spawn a real child process), and `backup-sweep` (backup collects day-old staged tmps from the
+source archive and touches nothing else; end-to-end through the real CLI: ingest → backup).
 
 `test/size-hints.test.js` asserts the **hint contract**: a *command-level* error hint is a command line
 the user pastes back, so it must run. (Parser errors in `bin/mkt.js` are the deliberate exception — a
@@ -148,8 +155,11 @@ rather than importing `size()` for exactly that reason. Three tiers:
 
 The suite clears the whole `MKT_*` namespace before spawning — `size` falls back to `$MKT_ACCOUNT`, and
 the vars other commands read have *side effects*: an `alert` test would send real Telegram/ntfy pushes,
-a `backup` test would write to someone's iCloud. `$HOME` is still owed by whoever adds the first
-DB-touching case (it needs a temp dir, else the test opens the developer's real `~/.mkt/mkt.db`).
+a `backup` test would write to someone's iCloud. The old "`$HOME` is owed by the first DB-touching
+case" debt is settled by `backup-sweep.test.js`, and the mechanism is `$MKT_HOME`, not `$HOME`: it
+is the one knob every path resolver honours (`db.js`, `ingest.js`, `record.js`, `backup.js`), so a
+temp `MKT_HOME` isolates the DB *and* the archive in one move — copy that pattern for any new
+DB-touching test.
 
 Extend the suite whenever a command grows a hint. Note the argv splitter is
 whitespace-only, and hints elsewhere carry quoted expressions (`--where 'RSI < 30'`) that need a
