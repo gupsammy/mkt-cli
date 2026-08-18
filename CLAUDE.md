@@ -166,3 +166,19 @@ whitespace-only, and hints elsewhere carry quoted expressions (`--where 'RSI < 3
 quote-aware tokenizer first.
 
 Full design spec: `../trading-experiments/docs/mkt-cli-spec.md`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues on `gupsammy/mkt-cli`, driven via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles use their default label strings (`needs-triage`, `needs-info`,
+`ready-for-agent`, `ready-for-human`, `wontfix`) — a state axis orthogonal to the existing
+`severity:*` and area labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root, both created lazily. See `docs/agents/domain.md`.
