@@ -1,4 +1,5 @@
-import { search, MktError } from '../providers/tradingview.js';
+import { search } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { printRows } from '../output.js';
 
 export default async function searchCmd({ positionals, flags }) {

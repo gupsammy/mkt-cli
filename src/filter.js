@@ -12,7 +12,7 @@
  * `fieldSet` disambiguates a non-numeric right side: a valid column name → column reference,
  * otherwise a string literal. It also collects every referenced column for D2 validation.
  */
-import { MktError } from './providers/tradingview.js';
+import { MktError } from './errors.js';
 
 const OPS = [
   ['>=', 'egreater'], ['<=', 'eless'], ['!=', 'nequal'],

@@ -6,7 +6,7 @@ import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import Database from 'better-sqlite3';
 import { openDb } from '../db.js';
-import { MktError } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { todayFor } from '../tzdate.js';
 import { printObject } from '../output.js';
 

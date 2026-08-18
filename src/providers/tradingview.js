@@ -9,6 +9,7 @@
  *   history WS     wss://data.tradingview.com/socket.io/websocket  + unauthorized_user_token
  */
 import WebSocket from 'ws';
+import { MktError } from '../errors.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -25,15 +26,6 @@ export const REGIONS = ['america', 'forex', 'crypto', 'futures', 'bond', 'cfd', 
 
 // Meta-columns the scanner always accepts but that are absent from /metainfo.
 export const META_COLUMNS = new Set(['name', 'description']);
-
-/** Typed error the CLI maps to an exit code + hint. */
-export class MktError extends Error {
-  constructor(code, message, hint = null) {
-    super(message);
-    this.code = code;   // snake_case: unknown_symbol, bad_column, upstream, ...
-    this.hint = hint;   // executable command string or null
-  }
-}
 
 // ---------------------------------------------------------------- scanner REST
 
@@ -56,7 +48,13 @@ export async function scan({ region = 'america', columns, filter, filter2, sort,
   if (res.status === 404) throw new MktError('not_found', `Unknown region "${region}".`, 'mkt regions --json');
   if (!res.ok) throw new MktError('upstream', `Scanner HTTP ${res.status} ${res.statusText}`, null);
   const json = await res.json();
-  return { total: json.totalCount ?? 0, rows: json.data || [] };
+  // Rows come back keyed by column name — the {s, d:[...]} wire shape stays inside this module.
+  const rows = (json.data || []).map((r) => {
+    const o = { symbol: r.s };
+    columns.forEach((c, i) => { o[c] = r.d[i]; });
+    return o;
+  });
+  return { total: json.totalCount ?? 0, rows };
 }
 
 // metainfo, cached to disk (refresh weekly) so column validation is ~free after first run.

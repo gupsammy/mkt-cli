@@ -42,8 +42,7 @@ export default async function screen({ flags }) {
   validateColumns(new Set([...columns, ...cols]), fs);   // D2: reject typos before the scan
 
   const range = [0, symbols ? symbols.length : limit];
-  const { total, rows } = await scan({ region, columns, filter, sort, range, symbols });
-  const out = rows.map((r) => ({ symbol: r.s, ...Object.fromEntries(columns.map((c, i) => [c, r.d[i]])) }));
+  const { total, rows: out } = await scan({ region, columns, filter, sort, range, symbols });
 
   if (!flags.quiet) process.stderr.write(`# matches=${total} returned=${out.length} has_more=${total > out.length}\n`);
   printRows(out, flags);

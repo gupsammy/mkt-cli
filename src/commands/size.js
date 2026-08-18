@@ -1,4 +1,4 @@
-import { MktError } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { printObject } from '../output.js';
 
 // mkt size --entry E --stop S [--account 6000] [--risk 1] [--max-pct 25] [--target T]

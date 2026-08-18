@@ -4,26 +4,32 @@ import os from 'node:os';
 import zlib from 'node:zlib';
 import readline from 'node:readline';
 import { openDb, upsertStmt, rowToParams } from '../db.js';
-import { MktError } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { printObject } from '../output.js';
 
 const home = () => process.env.MKT_HOME || path.join(os.homedir(), '.mkt');
 
 // Load one .ndjson.gz file into the DB inside a single transaction. Returns rows ingested.
-async function ingestFile(file, db, stmt) {
+// region is stamped here (not in the NDJSON): the archive directory is the authority on it.
+async function ingestFile(file, db, stmt, region) {
   const rl = readline.createInterface({ input: fs.createReadStream(file).pipe(zlib.createGunzip()) });
   const rows = [];
-  for await (const line of rl) { if (line.trim()) rows.push(JSON.parse(line)); }
+  for await (const line of rl) { if (line.trim()) rows.push({ ...JSON.parse(line), region }); }
   const tx = db.transaction((items) => { for (const o of items) stmt.run(rowToParams(o)); });
   tx(rows);
   return rows.length;
 }
 
-// mkt ingest [--region R] [--prune]
-// Loads every snapshot .ndjson.gz into ~/.mkt/mkt.db (idempotent upsert).
+// mkt ingest [--region R] [--all] [--prune]
+// Loads snapshot .ndjson.gz files into ~/.mkt/mkt.db (idempotent upsert). Incremental by default:
+// only files on/after the region's newest ingested date replay — ">=" not ">" because `record`
+// rewrites today's file in place, so today must be re-absorbed. --all replays every file (full
+// rebuild: fresh machine, restored archive, relabeled days).
 // --prune is DEPRECATED and not used by the scheduled job: the gz archive is the source of truth and
 // is kept forever (it is unrecoverable; the DB is a projection this command can always rebuild from
-// it). It still deletes gz >30d after a verified round-trip if you ask for it. See `mkt backup`.
+// it). It still deletes gz >30d after a verified round-trip if you ask for it — and it implies
+// --all (re-reads the whole archive), since the round-trip is only verified for replayed files.
+// See `mkt backup`.
 export default async function ingest({ flags }) {
   const region = flags.region || 'america';
   const dir = path.join(home(), 'snapshots', region);
@@ -34,11 +40,21 @@ export default async function ingest({ flags }) {
 
   const db = openDb({ readonly: false });
   const stmt = upsertStmt(db);
+
+  // High-water mark is per-region. Rows ingested before the region column existed are NULL and
+  // don't count — so the first post-migration run replays everything once and stamps them.
+  // --prune implies --all: the verified-round-trip check below compares DB counts against rows
+  // replayed THIS run (perDate), and an incremental run never replays the >30d prune candidates —
+  // pruning on stale counts would delete gz files nothing verified.
+  const maxDate = db.prepare(`SELECT MAX(date) d FROM snapshots WHERE region = ?`).get(region).d;
+  const all = flags.all || flags.prune || !maxDate;
+  const todo = all ? files : files.filter((f) => f.replace('.ndjson.gz', '') >= maxDate);
+
   let ingested = 0, filesDone = 0, pruned = 0;
   const perDate = {};
 
-  for (const f of files) {
-    const n = await ingestFile(path.join(dir, f), db, stmt);
+  for (const f of todo) {
+    const n = await ingestFile(path.join(dir, f), db, stmt, region);
     const date = f.replace('.ndjson.gz', '');
     perDate[date] = n;
     ingested += n; filesDone++;
@@ -50,7 +66,7 @@ export default async function ingest({ flags }) {
     for (const f of files) {
       const date = f.replace('.ndjson.gz', '');
       if (date >= cutoff || date === newest) continue;   // keep the 30-day buffer + always the latest
-      const inDb = db.prepare(`SELECT COUNT(*) c FROM snapshots WHERE date = ?`).get(date).c;
+      const inDb = db.prepare(`SELECT COUNT(*) c FROM snapshots WHERE date = ? AND region = ?`).get(date, region).c;
       if (inDb === perDate[date]) { fs.rmSync(path.join(dir, f)); pruned++; }   // verified round-trip → safe to delete
     }
   }
@@ -58,7 +74,13 @@ export default async function ingest({ flags }) {
   const totalRows = db.prepare(`SELECT COUNT(*) c FROM snapshots`).get().c;
   const dates = db.prepare(`SELECT COUNT(DISTINCT date) c FROM snapshots`).get().c;
   db.close();
-  printObject({ ingested, files: filesDone, pruned, db_rows: totalRows, db_dates: dates, region }, flags);
+  const skipped = files.length - todo.length;
+  // A restored/partially-replayed archive is invisible in a bare count — say what was skipped and
+  // how to replay it, so "skipped" never silently reads as "covered".
+  if (skipped && !flags.quiet) {
+    process.stderr.write(`# skipped=${skipped} file(s) before ${maxDate} (already ingested); mkt ingest --all replays everything\n`);
+  }
+  printObject({ ingested, files: filesDone, skipped, pruned, db_rows: totalRows, db_dates: dates, region }, flags);
   return 0;
 }
 
