@@ -33,10 +33,11 @@ export default async function size({ flags }) {
   // other limit already passes; otherwise fall back to the account that satisfies both at once. The
   // caller's own percentages are carried into every hint, since needAccount was derived from them and
   // a hint that silently reverts them to the defaults is computed against different numbers than it runs.
-  const hint = ({ risk = riskPct, pct = maxPct, acct = null }) =>
+  const hint = ({ risk = riskPct, cap: capFlag = maxPct, acct = null, target = null }) =>
     `mkt size --entry ${entry} --stop ${stop}`
-    + (risk !== 1 ? ` --risk ${risk}` : '') + (pct !== 25 ? ` --max-pct ${pct}` : '')
-    + (acct ? ` --account ${acct}` : '');
+    + (risk !== 1 ? ` --risk ${risk}` : '') + (capFlag !== 25 ? ` --max-pct ${capFlag}` : '')
+    + (account !== 6000 && !acct ? ` --account ${account}` : '') + (acct ? ` --account ${acct}` : '')
+    + (target ? ` --target ${target}` : '');
   const needRisk = ceil2(riskPerShare / account * 100);
   const needPct = Math.ceil(entry / account * 100);
   const needAccount = Math.ceil(Math.max(riskPerShare * 100 / riskPct, entry * 100 / maxPct));
@@ -48,7 +49,7 @@ export default async function size({ flags }) {
   if (byCap < 1) {
     throw new MktError('usage',
       `Position cap (--max-pct ${maxPct}% = $${round(cap)}) is below one share at $${entry}.`,
-      needPct <= 100 ? hint({ pct: needPct }) : hint({ acct: needAccount }));
+      needPct <= 100 ? hint({ cap: needPct }) : hint({ acct: needAccount }));
   }
   const shares = Math.min(byRisk, byCap);   // floor throughout: actual risk is always <= stated risk
   const capped = byCap < byRisk;
@@ -68,10 +69,12 @@ export default async function size({ flags }) {
       // A 2R target, floored at half the entry: on a short whose stop is wide relative to entry,
       // `entry - 2R` goes negative, and a suggested price below zero fails num() on the very next run.
       // The floored branch is no longer 2R — it is just the nearest sane target that is still a profit.
+      // Significant digits, not 2dp: round(0.005) is 0.01, which on a $0.01 short lands back ON entry
+      // and hands you a hint that reproduces this error verbatim.
       const twoR = side === 'long' ? entry + riskPerShare * 2 : Math.max(entry - riskPerShare * 2, entry / 2);
       throw new MktError('usage',
         `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.`,
-        `mkt size --entry ${entry} --stop ${stop} --target ${round(twoR)}`);
+        hint({ target: sig(twoR) }));
     }
     out.reward_risk = round(rewardPerShare / riskPerShare);
     out.profit_at_target = round(shares * rewardPerShare);
@@ -102,3 +105,6 @@ function pct(v, name, fallback) {
 const round = (x) => Math.round(x * 100) / 100;
 // Round UP to 2dp: a suggested percentage has to clear the threshold, not land just under it.
 const ceil2 = (x) => Math.ceil(x * 100) / 100;
+// Enough significant digits to survive sub-cent prices: a 2dp round would collapse a $0.005 target to
+// $0.01, and on a $0.01 short that is the entry itself.
+const sig = (x) => Number(x.toPrecision(6));
