@@ -31,8 +31,11 @@ const BIN = fileURLToPath(new URL('../bin/mkt.js', import.meta.url));
 const ENV = { ...process.env };
 for (const k of Object.keys(ENV)) if (k.startsWith('MKT_')) delete ENV[k];
 
-function run(args) {
-  const r = spawnSync(process.execPath, [BIN, 'size', ...args], { encoding: 'utf8', env: ENV });
+// extraEnv puts a variable deliberately back: MKT_ACCOUNT is the one default that is environment-
+// dependent, so the hint path that decides whether to emit --account can only be exercised with it set.
+// The rerun has to see the same env, which is the entire point of the case.
+function run(args, extraEnv) {
+  const r = spawnSync(process.execPath, [BIN, 'size', ...args], { encoding: 'utf8', env: { ...ENV, ...extraEnv } });
   const hint = (r.stderr.match(/^hint:\s+(.+)$/m) ?? [])[1]?.trim() ?? null;
   return { code: r.status, stdout: r.stdout, stderr: r.stderr, hint };
 }
@@ -46,12 +49,10 @@ const flagsOf = (argv) => Object.fromEntries(
 );
 const hintArgv = (hint) => hint.split(/\s+/).slice(2);   // drop the leading `mkt size`
 
-// What the rerun falls back to for an omitted --max-pct. This is a THIRD copy of a constant that
-// size.js already holds twice — the real default at `pct(flags['max-pct'], 'max-pct', 25)` and hint()'s
-// omission literal `capFlag !== 25` — and those two silently diverging is itself the PR #8 bug shape.
-// account and risk are not declared here for that reason: they are read back out of the rerun's own
-// output below. max-pct is not recoverable from the output (only whether it bound), so it stays.
-const MAX_PCT_DEFAULT = 25;
+// No local copy of size.js's defaults lives here. Every one of them is read back out of the rerun's
+// own output instead, because a copy cannot see the original change — which is the PR #8 bug shape
+// reappearing inside the suite built to catch it. `max_pct` was added to the output for exactly this
+// reason; it also answers "capped at what?" for anything parsing the JSON.
 
 // Correctable inputs: the numbers are well-formed, the combination just doesn't size. The hint is a
 // CORRECTION, so it has to carry the caller's own inputs forward.
@@ -71,11 +72,16 @@ const FAILING = [
   // --risk 1 is the default spelled out, so hint() omits it. That makes this the case that notices if
   // size.js's real default and hint()'s omission literal ever stop agreeing.
   ['cap-bound with risk spelled out at its default', ['--entry', '5000', '--stop', '4999', '--account', '6000', '--risk', '1']],
+  // The same invocation with MKT_ACCOUNT set. --account 6000 is the literal hint() used to compare
+  // against, so this is the only shape where an omitted --account resolves to a different account on
+  // rerun — the account twin of the case above, except one of the two copies isn't a constant.
+  ['explicit account that matches the literal, with the env set',
+    ['--entry', '5000', '--stop', '4999', '--account', '6000'], { MKT_ACCOUNT: '3000' }],
 ];
 
-for (const [name, args] of FAILING) {
+for (const [name, args, env] of FAILING) {
   test(`hint corrects in one step: ${name}`, () => {
-    const failed = run(args);
+    const failed = run(args, env);
     assert.equal(failed.code, 2, `expected a usage failure\n${failed.stderr}`);
     assert.ok(failed.hint, `no hint offered\n${failed.stderr}`);
 
@@ -90,10 +96,12 @@ for (const [name, args] of FAILING) {
     // successfully, just at 1% instead of the 100% the caller asked for — silently wrong, and green.
     // So run the hint and read back what it ACTUALLY sized at, rather than recomputing what it should
     // have. Asserting against a local copy of size.js's defaults cannot see those defaults change.
-    const rerun = run([...hintArgv(failed.hint), '--compact']);
+    const rerun = run([...hintArgv(failed.hint), '--compact'], env);
     assert.equal(rerun.code, 0, `hint does not resolve: ${failed.hint}\n${rerun.stderr}`);
     const sized = JSON.parse(rerun.stdout);
-    const effective = { account: sized.account, risk: sized.risk_budget / sized.account * 100 };
+    const effective = {
+      account: sized.account, 'max-pct': sized.max_pct, risk: sized.risk_budget / sized.account * 100,
+    };
 
     for (const [flag, value] of Object.entries(asked)) {
       if (flag === 'target') {
@@ -104,11 +112,12 @@ for (const [name, args] of FAILING) {
         assert.equal(Number(offered[flag]), Number(value),
           `hint changed --${flag}, which is the caller's actual trade`);
       } else {
-        const onRerun = flag === 'max-pct'
-          ? ('max-pct' in offered ? Number(offered['max-pct']) : MAX_PCT_DEFAULT)
-          : effective[flag];
-        assert.ok(onRerun >= Number(value) - 1e-9,
-          `hint silently lowers --${flag}: asked ${value}, rerun actually used ${onRerun}`);
+        // risk is derived from two outputs that size.js rounds to 2dp, so it carries ~1/account of
+        // error. A fixed epsilon would be orders of magnitude tighter than the quantity it guards and
+        // would fire on a correct hint — e.g. --account 331 --risk 0.75 lands at 0.74924.
+        const slack = flag === 'risk' ? 1 / effective.account : 0;
+        assert.ok(effective[flag] >= Number(value) - slack,
+          `hint silently lowers --${flag}: asked ${value}, rerun actually used ${effective[flag]}`);
       }
     }
   });
@@ -122,15 +131,18 @@ const INVALID = [
   ['risk above 100 percent', ['--entry', '50', '--stop', '47', '--risk', '200']],
   ['stop missing entirely', ['--entry', '50']],
   ['entry equals stop (zero risk per share)', ['--entry', '50', '--stop', '50']],
+  // The canned example is a command too, and it inherits the same env fallback every other hint does.
+  ['zero risk under an account the example would not clear',
+    ['--entry', '412.5', '--stop', '412.5', '--account', '6000'], { MKT_ACCOUNT: '100' }],
 ];
 
-for (const [name, args] of INVALID) {
+for (const [name, args, env] of INVALID) {
   test(`example hint runs: ${name}`, () => {
-    const failed = run(args);
+    const failed = run(args, env);
     assert.equal(failed.code, 2, `expected a usage failure\n${failed.stderr}`);
     assert.ok(failed.hint, `validation error offers no hint at all\n${failed.stderr}`);
     assert.notDeepEqual(flagsOf(hintArgv(failed.hint)), flagsOf(args), 'hint reproduces the failing command');
-    assert.equal(run(hintArgv(failed.hint)).code, 0, `hint does not run: ${failed.hint}`);
+    assert.equal(run(hintArgv(failed.hint), env).code, 0, `hint does not run: ${failed.hint}`);
   });
 }
 
@@ -138,7 +150,7 @@ test('sizing arithmetic is unchanged', () => {
   const base = JSON.parse(run(['--entry', '50', '--stop', '47', '--compact']).stdout);
   assert.deepEqual(base, {
     side: 'long', shares: 20, position_value: 1000, pct_of_account: 16.67,
-    risk_per_share: 3, loss_at_stop: 60, risk_budget: 60, account: 6000, capped_by_max_pct: false,
+    risk_per_share: 3, loss_at_stop: 60, risk_budget: 60, account: 6000, max_pct: 25, capped_by_max_pct: false,
   });
 
   // Floors throughout, so the realised loss never exceeds the stated risk budget.

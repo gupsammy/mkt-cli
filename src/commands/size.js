@@ -15,6 +15,10 @@ export default async function size({ flags }) {
   const account = flags.account != null
     ? num(flags.account, 'account', { positive: true })
     : num(process.env.MKT_ACCOUNT ?? 6000, 'account (from $MKT_ACCOUNT)', { positive: true });
+  // hint() may omit a flag only when the rerun would fall back to the same value. That holds for risk
+  // and max-pct, whose defaults are constants — but the account default is `$MKT_ACCOUNT ?? 6000`, so
+  // with the env set an omitted --account resolves to something else entirely and the hint fails.
+  const envAccount = process.env.MKT_ACCOUNT != null;
   const riskPct = pct(flags.risk, 'risk', 1);
   const maxPct = pct(flags['max-pct'], 'max-pct', 25);
 
@@ -44,7 +48,7 @@ export default async function size({ flags }) {
   const hint = ({ risk = riskPct, cap: capFlag = maxPct, acct = null, target = null }) =>
     `mkt size --entry ${entry} --stop ${stop}`
     + (risk !== 1 ? ` --risk ${risk}` : '') + (capFlag !== 25 ? ` --max-pct ${capFlag}` : '')
-    + (account !== 6000 && !acct ? ` --account ${account}` : '') + (acct ? ` --account ${acct}` : '')
+    + ((account !== 6000 || envAccount) && !acct ? ` --account ${account}` : '') + (acct ? ` --account ${acct}` : '')
     + (target ? ` --target ${target}` : '');
   const needRisk = ceil2(riskPerShare / account * 100);
   const needPct = Math.ceil(entry / account * 100);
@@ -66,7 +70,7 @@ export default async function size({ flags }) {
   const out = {
     side, shares, position_value: round(position), pct_of_account: round(position / account * 100),
     risk_per_share: round(riskPerShare), loss_at_stop: round(shares * riskPerShare),
-    risk_budget: round(riskDollars), account: round(account), capped_by_max_pct: capped,
+    risk_budget: round(riskDollars), account: round(account), max_pct: maxPct, capped_by_max_pct: capped,
   };
   if (flags.target != null) {
     const target = num(flags.target, 'target', { positive: true });
@@ -112,7 +116,9 @@ function pct(v, name, fallback) {
 }
 
 // The shape of a valid invocation, shown when the caller's own numbers are unusable.
-const EXAMPLE = 'mkt size --entry 50 --stop 47';
+// --account is pinned for the same reason hint() stopped omitting it: without it, this example
+// fails outright under an exported MKT_ACCOUNT too small to buy a share.
+const EXAMPLE = 'mkt size --entry 50 --stop 47 --account 6000';
 
 const round = (x) => Math.round(x * 100) / 100;
 // Round UP to 2dp: a suggested percentage has to clear the threshold, not land just under it.
