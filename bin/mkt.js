@@ -43,7 +43,7 @@ const SPEC = {
   size:      { value: ['entry', 'stop', 'account', 'risk', 'max-pct', 'target'] },
   watchlist: { value: ['kind'] },
   backup:    { value: ['to'] },
-  notify:    {},
+  notify:    { value: ['title', 'body'] },
 };
 
 // The command is the first bare token — global flags (all boolean, so they consume nothing) may
@@ -110,6 +110,7 @@ COMMANDS
   ingest    Load NEW snapshots into ~/.mkt/mkt.db (incremental; --all = full replay;
             --prune deprecated, implies --all — re-reads the whole archive)
   backup    Mirror gz archive + a consistent DB dump to durable storage (default iCloud) [--to DIR]
+  notify    Internal scheduler bridge: mkt notify --title=<title> --body=<body>
   sql       Query the panel:     mkt sql "SELECT symbol,RSI FROM snapshots WHERE RSI<30"
   alert     Edge-triggered alerts: add <name> --where '<expr>' (live) | --sql "<SELECT>" (panel)
             list · rm <name> · test <name> · check [--kind live|panel] [--dry-run]

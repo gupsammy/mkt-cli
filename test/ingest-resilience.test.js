@@ -8,6 +8,22 @@ import test from 'node:test';
 
 const CLI = path.resolve('bin/mkt.js');
 
+function splitHint(hint) {
+  const words = [];
+  let word = '', quote = null;
+  for (const char of hint) {
+    if (quote) {
+      if (char === quote) quote = null;
+      else word += char;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (/\s/.test(char)) {
+      if (word) { words.push(word); word = ''; }
+    } else word += char;
+  }
+  if (word) words.push(word);
+  return words;
+}
+
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mkt-ingest-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -59,8 +75,12 @@ test('ingest skips a corrupt file, commits later files, reports its offset, and 
   ]);
 
   const result = f.run('ingest', '--all', '--json');
-  assert.equal(result.status, 7, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /2026-08-02\.ndjson\.gz: line 2, byte \d+/);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    ingested: 2, files: 2, skipped: 0, pruned: 0, db_rows: 2, db_dates: 2,
+    region: 'america', failed: 1,
+  });
 
   const rows = f.run('sql', 'SELECT date,symbol FROM snapshots ORDER BY date', '--compact');
   assert.equal(rows.status, 0, rows.stderr);
@@ -70,6 +90,10 @@ test('ingest skips a corrupt file, commits later files, reports its offset, and 
   ]);
 
   assert.match(fs.readFileSync(f.notifyLog, 'utf8'), /mkt ingest failed/);
+
+  const retry = f.run('ingest', '--compact');
+  assert.equal(retry.status, 1, retry.stderr);
+  assert.match(retry.stderr, /2026-08-02\.ndjson\.gz: line 2, byte \d+/);
 });
 
 test('ingest reports every corrupt file in one error', (t) => {
@@ -81,9 +105,9 @@ test('ingest reports every corrupt file in one error', (t) => {
   ]);
 
   const result = f.run('ingest', '--all', '--compact');
-  assert.equal(result.status, 7, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /2026-08-01\.ndjson\.gz: line 1, byte 0/);
-  assert.match(result.stderr, /2026-08-02\.ndjson\.gz: byte \d+/);
+  assert.match(result.stderr, /2026-08-02\.ndjson\.gz: after \d+ decompressed bytes/);
 
   const rows = f.run('sql', 'SELECT symbol FROM snapshots', '--compact');
   assert.equal(rows.status, 0, rows.stderr);
@@ -106,10 +130,22 @@ test('clean ingest keeps its existing summary and does not notify', (t) => {
 test('notify command routes wrapper failures through the shared sinks', (t) => {
   const f = fixture(t);
 
-  const result = f.run('notify', 'mkt-record', 'backup failed (exit 1)');
+  const result = f.run('notify', '--title=mkt-record', '--body=--backup failed (exit 1)');
   assert.equal(result.status, 0, result.stderr);
   assert.match(fs.readFileSync(f.notifyLog, 'utf8'), /mkt-record/);
-  assert.match(fs.readFileSync(f.notifyLog, 'utf8'), /backup failed \(exit 1\)/);
+  assert.match(fs.readFileSync(f.notifyLog, 'utf8'), /--backup failed \(exit 1\)/);
+});
+
+test('notify usage hint is runnable', (t) => {
+  const f = fixture(t);
+  const usage = f.run('notify');
+  assert.equal(usage.status, 2);
+  const hint = usage.stderr.match(/^hint:\s+(.+)$/m)?.[1];
+  assert.ok(hint, usage.stderr);
+  const [command, ...args] = splitHint(hint);
+  assert.equal(command, 'mkt');
+  const rerun = f.run(...args);
+  assert.equal(rerun.status, 0, rerun.stderr);
 });
 
 test('failed full replay does not prune any source snapshots', (t) => {
@@ -120,6 +156,15 @@ test('failed full replay does not prune any source snapshots', (t) => {
   f.writeSnapshot('2026-08-03.ndjson.gz', ['{bad json']);
 
   const result = f.run('ingest', '--prune', '--compact');
-  assert.equal(result.status, 7, result.stderr);
+  assert.equal(result.status, 1, result.stderr);
   assert.equal(f.hasSnapshot('2020-01-02.ndjson.gz'), true);
+});
+
+test('ingest notifies failures that happen before the per-file loop', (t) => {
+  const f = fixture(t);
+
+  const result = f.run('ingest', '--region', 'missing');
+  assert.equal(result.status, 3, result.stderr);
+  assert.match(fs.readFileSync(f.notifyLog, 'utf8'), /mkt ingest failed/);
+  assert.match(fs.readFileSync(f.notifyLog, 'utf8'), /No snapshots/);
 });

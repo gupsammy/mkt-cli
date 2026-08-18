@@ -20,6 +20,7 @@ search   apple                                   # → NASDAQ:AAPL (synthesizes 
 fields   --search rsi  |  --category margins     # introspect the field catalog
 regions                                          # the 8 universes + counts
 record   --region america                        # append daily wide snapshot (see below)
+notify   --title=mkt-record --body="backup failed" # internal scheduler bridge to configured sinks
 ```
 - `--json` = NDJSON (lists) / JSON (scalars). `--compact` = minified. Data→stdout, errors→stderr.
 - `--where` filter language (AND-only; OR is a future addition): `<col> < > <= >= = != <val>`,
@@ -43,7 +44,8 @@ the DB schema; add a field there and both the next record and the next ingest pi
 
 **The panel = SQLite (Phase 2, built).** `mkt ingest` loads the gz snapshots into `~/.mkt/mkt.db`,
 one `snapshots(date, symbol, region, …74 cols)` table, PK `(date,symbol)`, `(symbol,date)` index,
-idempotent upsert. Incremental by default (only files ≥ the region's newest ingested date replay;
+idempotent upsert. Incremental by default (files ≥ the region's newest ingested date replay, plus
+any older archive date missing from the DB so a failed day is retried until repaired;
 `--all` = full rebuild). Schema auto-migrates: a new field in `schema.js` → `ALTER TABLE ADD COLUMN`
 on next ingest (old rows NULL).
 Query with `mkt sql "<SELECT>"` — a **read-only** connection (writes fail at the driver), NDJSON out.
@@ -123,6 +125,9 @@ The SQLite query layer (Phase 2) is **built** — see "The recorder + DB" above.
 `node --test test/` matches nothing and silently "passes"). CI runs it on every PR
 (`.github/workflows/test.yml`); it needs `npm ci` because `bin/mkt.js` imports every command eagerly,
 better-sqlite3 included.
+
+`test/ingest-resilience.test.js` drives the real CLI against a temporary `MKT_HOME`: corrupt-file
+continuation/retry, partial-success output, offsets, notification sinks, and prune safety.
 
 `test/size-hints.test.js` asserts the **hint contract**: a *command-level* error hint is a command line
 the user pastes back, so it must run. (Parser errors in `bin/mkt.js` are the deliberate exception — a
