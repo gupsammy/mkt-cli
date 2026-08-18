@@ -160,13 +160,16 @@ export default async function backup({ flags }) {
   //    is done — but count only what this run actually deleted, so old_dumps_pruned stays true.
   //    Anything else (EACCES, an iCloud placeholder that won't unlink) is held rather than thrown: the
   //    dump and the mirror are already published, so the report has to reach stdout before this fails.
+  //    Keep going after one sticks, and report the first. `dumps` is ascending and sliced to the oldest
+  //    excess, so a single stuck file is always the one hit first — stopping there would mean retention
+  //    never advances past it and the dump count climbs above KEEP_DB_DUMPS forever. An iCloud-evicted
+  //    placeholder is exactly that shape: oldest, coldest, least likely to still be materialised.
   let pruneErr = null;
   for (const f of dumps.slice(0, Math.max(0, dumps.length - KEEP_DB_DUMPS))) {
     try { fs.rmSync(path.join(dbDir, f)); pruned++; } catch (e) {
       if (e.code === 'ENOENT') continue;
-      pruneErr = new MktError('generic', `Could not prune old dump ${f}: ${e.message}`,
+      pruneErr ??= new MktError('generic', `Could not prune old dump ${f}: ${e.message}`,
         'check permissions on the backup directory');
-      break;
     }
   }
 
