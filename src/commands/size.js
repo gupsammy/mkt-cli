@@ -28,23 +28,27 @@ export default async function size({ flags }) {
   // cap-bound result sent you in a circle: widening --risk changed nothing and the message didn't move.
   const byRisk = Math.floor(riskDollars / riskPerShare);
   const byCap = Math.floor(cap / entry);
-  // Each hint names the smallest percentage that actually buys one share — but only when one exists.
-  // Past 100% no percentage helps: the account is the binding constraint, so suggesting one would hand
-  // back a command that reproduces this exact error. Fall back to the account that clears BOTH limits,
-  // since raising it past one and not the other just moves the failure to the next line.
-  const base = `mkt size --entry ${entry} --stop ${stop}`;
+  // Both limits have to clear one share, so a hint that raises only the one that happened to fail just
+  // relocates the error to the next line. A single-flag suggestion is therefore offered ONLY when the
+  // other limit already passes; otherwise fall back to the account that satisfies both at once. The
+  // caller's own percentages are carried into every hint, since needAccount was derived from them and
+  // a hint that silently reverts them to the defaults is computed against different numbers than it runs.
+  const hint = ({ risk = riskPct, pct = maxPct, acct = null }) =>
+    `mkt size --entry ${entry} --stop ${stop}`
+    + (risk !== 1 ? ` --risk ${risk}` : '') + (pct !== 25 ? ` --max-pct ${pct}` : '')
+    + (acct ? ` --account ${acct}` : '');
+  const needRisk = ceil2(riskPerShare / account * 100);
+  const needPct = Math.ceil(entry / account * 100);
   const needAccount = Math.ceil(Math.max(riskPerShare * 100 / riskPct, entry * 100 / maxPct));
   if (byRisk < 1) {
-    const needRisk = ceil2(riskPerShare / account * 100);
     throw new MktError('usage',
       `Stop is too wide for the risk budget: $${round(riskDollars)} at $${round(riskPerShare)}/share is under one share.`,
-      needRisk <= 100 ? `${base} --risk ${needRisk}` : `${base} --account ${needAccount}`);
+      byCap >= 1 && needRisk <= 100 ? hint({ risk: needRisk }) : hint({ acct: needAccount }));
   }
   if (byCap < 1) {
-    const needPct = Math.ceil(entry / account * 100);
     throw new MktError('usage',
       `Position cap (--max-pct ${maxPct}% = $${round(cap)}) is below one share at $${entry}.`,
-      needPct <= 100 ? `${base} --max-pct ${needPct}` : `${base} --account ${needAccount}`);
+      needPct <= 100 ? hint({ pct: needPct }) : hint({ acct: needAccount }));
   }
   const shares = Math.min(byRisk, byCap);   // floor throughout: actual risk is always <= stated risk
   const capped = byCap < byRisk;
@@ -61,8 +65,9 @@ export default async function size({ flags }) {
     // on a short) is a loss, and abs() reported it as profit with a positive R multiple.
     const rewardPerShare = side === 'long' ? target - entry : entry - target;
     if (rewardPerShare <= 0) {
-      // A 2R target, except on a short whose stop is wide relative to entry — there `entry - 2R` goes
-      // negative, and a suggested price below zero fails num() on the very next run.
+      // A 2R target, floored at half the entry: on a short whose stop is wide relative to entry,
+      // `entry - 2R` goes negative, and a suggested price below zero fails num() on the very next run.
+      // The floored branch is no longer 2R — it is just the nearest sane target that is still a profit.
       const twoR = side === 'long' ? entry + riskPerShare * 2 : Math.max(entry - riskPerShare * 2, entry / 2);
       throw new MktError('usage',
         `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.`,
