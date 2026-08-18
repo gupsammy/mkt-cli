@@ -20,6 +20,7 @@ search   apple                                   # → NASDAQ:AAPL (synthesizes 
 fields   --search rsi  |  --category margins     # introspect the field catalog
 regions                                          # the 8 universes + counts
 record   --region america                        # append daily wide snapshot (see below)
+notify   --title=mkt-record --body="backup failed" # internal scheduler bridge to configured sinks
 ```
 - `--json` = NDJSON (lists) / JSON (scalars). `--compact` = minified. Data→stdout, errors→stderr.
 - `--where` filter language (AND-only; OR is a future addition): `<col> < > <= >= = != <val>`,
@@ -43,9 +44,15 @@ the DB schema; add a field there and both the next record and the next ingest pi
 
 **The panel = SQLite (Phase 2, built).** `mkt ingest` loads the gz snapshots into `~/.mkt/mkt.db`,
 one `snapshots(date, symbol, region, …74 cols)` table, PK `(date,symbol)`, `(symbol,date)` index,
-idempotent upsert. Incremental by default (only files ≥ the region's newest ingested date replay;
+idempotent upsert. Incremental by default (files ≥ the region's newest ingested date replay, plus
+any older archive date missing from the DB so a failed day is retried until repaired;
 `--all` = full rebuild). Schema auto-migrates: a new field in `schema.js` → `ALTER TABLE ADD COLUMN`
 on next ingest (old rows NULL).
+Data failures notify by default; `--no-notify` lets the scheduled wrapper own the single alert.
+That wrapper treats ingest's partial exit as non-fatal and always continues to backup + panel alerts,
+so a repeatedly corrupt day stays loud without wedging the durable mirror. For gzip-stream rot,
+`backup` preserves an existing good mirror and prints the restore command; it does not validate
+individual JSON records inside an otherwise valid gzip stream.
 Query with `mkt sql "<SELECT>"` — a **read-only** connection (writes fail at the driver), NDJSON out.
 Bad SQL / unknown column → exit 2 with a hint. **Only snapshots are stored** — temporal price stays
 on-demand via `mkt history` (bars are recoverable from the WS any time, so caching them buys speed
@@ -126,7 +133,9 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Three suites: `size-hints` (the hint contract, below), `record-staged-write` (record's
+Four suites: `size-hints` (the hint contract, below), `ingest-resilience` (corrupt-file continuation,
+retry visibility, partial-success output, offsets, notification ownership, and prune safety),
+`record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
 cases spawn a real child process), and `backup-sweep` (backup collects day-old staged tmps from the
 source archive and touches nothing else; end-to-end through the real CLI: ingest → backup).
