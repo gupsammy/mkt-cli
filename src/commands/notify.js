@@ -6,8 +6,7 @@ import { notify } from '../notify.js';
 export default async function notifyCommand({ positionals }) {
   const [title, body, ...extra] = positionals;
   if (!title || !body || extra.length) {
-    throw new MktError('usage', 'notify needs exactly a title and body.',
-      'mkt notify "mkt-record" "backup failed"');
+    throw new MktError('usage', 'notify needs exactly a title and body.');
   }
   await notify(title, body);
   return 0;

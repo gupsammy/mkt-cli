@@ -84,6 +84,14 @@ export default async function ingest({ flags }) {
     ingested += result.rows; filesDone++;
   }
 
+  if (failures.length) {
+    db.close();
+    const detail = failures.map((f) =>
+      `${f.file}: ${f.line == null ? '' : `line ${f.line}, `}byte ${f.byte} (${f.error.message})`).join('; ');
+    await notify('mkt ingest failed', `${region}: ${detail}`);
+    throw new MktError('conflict', `Failed to ingest ${failures.length} snapshot file(s): ${detail}.`);
+  }
+
   if (flags.prune) {
     const cutoff = cutoffDate(30);   // YYYY-MM-DD 30 days before the newest recorded date
     const newest = files.length ? files[files.length - 1].replace('.ndjson.gz', '') : null;
@@ -98,14 +106,6 @@ export default async function ingest({ flags }) {
   const totalRows = db.prepare(`SELECT COUNT(*) c FROM snapshots`).get().c;
   const dates = db.prepare(`SELECT COUNT(DISTINCT date) c FROM snapshots`).get().c;
   db.close();
-
-  if (failures.length) {
-    const detail = failures.map((f) =>
-      `${f.file}: ${f.line == null ? '' : `line ${f.line}, `}byte ${f.byte} (${f.error.message})`).join('; ');
-    await notify('mkt ingest failed', `${region}: ${detail}`);
-    throw new MktError('conflict', `Failed to ingest ${failures.length} snapshot file(s): ${detail}.`,
-      `mkt ingest --region ${region} --all`);
-  }
   const skipped = files.length - todo.length;
   // A restored/partially-replayed archive is invisible in a bare count — say what was skipped and
   // how to replay it, so "skipped" never silently reads as "covered".

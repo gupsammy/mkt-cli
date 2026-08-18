@@ -20,14 +20,12 @@ function fixture(t) {
     '#!/bin/sh\nprintf "%s\\n" "$*" >> "$MKT_TEST_NOTIFY_LOG"\n', { mode: 0o755 });
 
   const env = {
-    ...process.env,
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('MKT_'))),
+    HOME: path.join(root, 'home'),
     MKT_HOME: path.join(root, 'home'),
     MKT_TEST_NOTIFY_LOG: notifyLog,
     PATH: `${binDir}:${process.env.PATH}`,
   };
-  delete env.MKT_TG_TOKEN;
-  delete env.MKT_TG_CHAT;
-  delete env.MKT_NTFY_TOPIC;
 
   return {
     env,
@@ -37,6 +35,9 @@ function fixture(t) {
     },
     writeRawSnapshot(name, contents) {
       fs.writeFileSync(path.join(snapshotDir, name), contents);
+    },
+    hasSnapshot(name) {
+      return fs.existsSync(path.join(snapshotDir, name));
     },
     run(...args) {
       return spawnSync(process.execPath, [CLI, ...args], { env, encoding: 'utf8' });
@@ -109,4 +110,16 @@ test('notify command routes wrapper failures through the shared sinks', (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(fs.readFileSync(f.notifyLog, 'utf8'), /mkt-record/);
   assert.match(fs.readFileSync(f.notifyLog, 'utf8'), /backup failed \(exit 1\)/);
+});
+
+test('failed full replay does not prune any source snapshots', (t) => {
+  const f = fixture(t);
+  f.writeSnapshot('2020-01-02.ndjson.gz', [
+    JSON.stringify({ date: '2020-01-02', symbol: 'NYSE:OLD', close: 10 }),
+  ]);
+  f.writeSnapshot('2026-08-03.ndjson.gz', ['{bad json']);
+
+  const result = f.run('ingest', '--prune', '--compact');
+  assert.equal(result.status, 7, result.stderr);
+  assert.equal(f.hasSnapshot('2020-01-02.ndjson.gz'), true);
 });
