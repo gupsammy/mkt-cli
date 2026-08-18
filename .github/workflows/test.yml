@@ -1,0 +1,22 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+      # The suite spawns the real CLI, and bin/mkt.js imports every command eagerly — including the
+      # ones that pull in better-sqlite3 — so the native module has to be installed even though the
+      # sizer itself never touches the DB.
+      - run: npm ci
+      - run: npm test

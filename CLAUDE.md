@@ -118,4 +118,16 @@ screens spec §7–§13; back half is v2+.
 The SQLite query layer (Phase 2) is **built** — see "The recorder + DB" above. Deps are now
 `ws` + `better-sqlite3`.
 
+## Tests
+`npm test` — bare `node --test` (a positional path is a glob in Node >=22, not a directory, so
+`node --test test/` matches nothing and silently "passes"). CI runs it on every PR
+(`.github/workflows/test.yml`); it needs `npm ci` because `bin/mkt.js` imports every command eagerly,
+better-sqlite3 included.
+
+`test/size-hints.test.js` asserts the **hint contract**: every error hint is a command line the user
+pastes back, so it must differ from the command that just failed AND exit 0 when run verbatim. Naming
+the failing constraint is not enough. Four distinct bugs hid in that gap (PR #8, five review rounds) —
+none visible by reading the code, all trivial to catch by executing the hint. The suite spawns the real
+CLI rather than importing `size()` for exactly that reason. Extend it whenever a command grows a hint.
+
 Full design spec: `../trading-experiments/docs/mkt-cli-spec.md`.
