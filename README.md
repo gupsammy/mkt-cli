@@ -21,7 +21,8 @@ mkt fields --search rsi --json                         # grep the 3,771-field ca
 mkt fields --category margins                          # curated columns per category
 mkt regions --json
 mkt record --region america                            # append today's wide snapshot → NDJSON
-mkt ingest --region america --prune                    # load snapshots → ~/.mkt/mkt.db, drop gz >30d
+mkt ingest --region america                            # load snapshots → ~/.mkt/mkt.db
+mkt backup                                             # mirror gz archive + DB dump → iCloud [--to DIR]
 mkt sql "SELECT symbol,RSI FROM snapshots WHERE date=(SELECT max(date) FROM snapshots) AND RSI<30" --json
 mkt alert add oversold --where 'RSI<30' --where 'market_cap_basic>1e9'  # live edge-triggered alert
 mkt alert check --kind live --dry-run                  # run alerts, show new entrants, no push
@@ -55,11 +56,18 @@ point-in-time panel. Idempotent: re-running a day overwrites that day's file.
 
 `mkt ingest` loads the gz snapshots into `~/.mkt/mkt.db` (SQLite, one `snapshots(date,symbol,…)`
 table, idempotent upsert). Query with `mkt sql "<SELECT>"` (read-only connection; NDJSON out).
-`--prune` drops gz files >30 days old after a verified round-trip — the gz is a 30-day recovery
-buffer, the DB is the source of truth. Only snapshots are stored; temporal price stays on-demand via
-`mkt history`.
+**The gz archive is the source of truth; the DB is a rebuildable projection.** Snapshots are
+unrecoverable, so every gz file is kept forever (~3 GB/yr — trivial against losing a day). `ingest`
+can always reconstruct the DB from them. `--prune` still exists but is deprecated and not used by the
+scheduled job. Only snapshots are stored; temporal price stays on-demand via `mkt history`.
 
-Scheduled via **launchd** (not cron) — `~/scripts/mkt-record.sh` runs `record` → `ingest --prune`
+`mkt backup [--to DIR]` mirrors both to durable storage (default: iCloud Drive, which syncs offsite).
+The DB copy uses SQLite's online-backup API, so it is safe to run against the live WAL database; the
+gz mirror skips files already copied and keeps the last 7 timestamped DB dumps. It fails loudly —
+missing iCloud container, missing archive, or an empty panel all exit non-zero rather than reporting
+a backup that never happened.
+
+Scheduled via **launchd** (not cron) — `~/scripts/mkt-record.sh` runs `record` → `ingest` → `backup`
 weekdays after the US close. See the repo's `CLAUDE.md` for the panel-query examples.
 
 ## Notes

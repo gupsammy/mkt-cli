@@ -20,9 +20,10 @@ async function ingestFile(file, db, stmt) {
 }
 
 // mkt ingest [--region R] [--prune]
-// Loads every snapshot .ndjson.gz into ~/.mkt/mkt.db (idempotent upsert). With --prune, deletes
-// gz files older than 30 days AFTER a verified round-trip (DB row count for that date matches the
-// file's line count) — the gz is a 30-day disaster-recovery buffer; the DB is the source of truth.
+// Loads every snapshot .ndjson.gz into ~/.mkt/mkt.db (idempotent upsert).
+// --prune is DEPRECATED and not used by the scheduled job: the gz archive is the source of truth and
+// is kept forever (it is unrecoverable; the DB is a projection this command can always rebuild from
+// it). It still deletes gz >30d after a verified round-trip if you ask for it. See `mkt backup`.
 export default async function ingest({ flags }) {
   const region = flags.region || 'america';
   const dir = path.join(home(), 'snapshots', region);
