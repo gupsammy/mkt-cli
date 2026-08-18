@@ -103,17 +103,23 @@ export default async function size({ flags }) {
     // twoR is strictly on the profitable side by construction; only the rounding can break that, so
     // round against that inequality rather than at a chosen precision — see profitable() below.
     const better = (v) => (side === 'long' ? v > entry : v < entry);
+    // null when twoR left the representable range — entry + 2R overflows to Infinity near 1e308,
+    // entry / 2 underflows to 0 at the denormal floor — and either would fail num() on the rerun.
+    const suggested = profitable(twoR, better);
     // The hint may also raise a limit here, and --max-pct is the flag whose whole job is to cap
     // exposure. Every branch that moves a limit says so in its message; this one has to as well,
     // or the user pastes back a command that quietly quadruples their position size. The account
-    // arm reuses the shared `raised` sentence.
-    const also = !sizingFix ? NO_FIX
+    // arm reuses the shared `raised` sentence. A missing target price outranks a missing sizing
+    // fix in the message — the throw is about the target — and gets its own sentence: NO_FIX's
+    // "no account sizes a share" would be false here when a sizing correction does exist.
+    const also = suggested == null ? NO_TARGET
+      : !sizingFix ? NO_FIX
       : !Object.keys(sizingFix).length ? ''
       : sizingFix.acct ? raised
       : ' The position does not size at these limits either, so the hint corrects both.';
     throw new MktError('usage',
       `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.${also}`,
-      sizingFix ? hint({ ...sizingFix, target: profitable(twoR, better) }) : EXAMPLE);
+      sizingFix && suggested != null ? hint({ ...sizingFix, target: suggested }) : EXAMPLE);
   }
   if (byRisk < 1) {
     throw new MktError('usage',
@@ -174,7 +180,9 @@ function bump(v, step, clears) {
   // suggestion that needs widening.
   if (!Number.isFinite(v)) return null;
   for (let i = 0; i < 2 && !clears(v); i++) v = round(v + step);
-  return clears(v) ? v : null;
+  // Finiteness re-checked on the way out: round()'s own x * 100 overflows above ~1.8e306, so the
+  // loop body can manufacture the Infinity the entry gate excluded.
+  return Number.isFinite(v) && clears(v) ? v : null;
 }
 
 // sizingFix === null is the one place a well-formed input falls back to the example tier at runtime:
@@ -184,6 +192,10 @@ function bump(v, step, clears) {
 // handing over a different trade; the suite keys its example-tier handling on this sentence rather
 // than carrying a copy of EXAMPLE's text.
 const NO_FIX = ' No account, risk or cap this command can suggest sizes one share here; the hint is an example, not a correction.';
+// The target twin of NO_FIX: twoR left the representable positive range, so no suggestable price is
+// strictly on the profitable side. Shares NO_FIX's closing phrase — the suite keys its example-tier
+// handling on that common suffix.
+const NO_TARGET = ' No representable price is on the profitable side of this entry; the hint is an example, not a correction.';
 
 // The shape of a valid invocation, shown when the caller's own numbers are unusable. Not fully
 // explicit like a correction hint — it teaches shape, not values — but --account is pinned because
@@ -200,12 +212,15 @@ const ceil2 = (x) => Math.ceil(x * 100) / 100;
 // target to $0.01 (the entry itself, on a penny short), while 6 significant digits collapse
 // entry+0.000002 back to 100 (the entry itself, on a tight stop). Both hand back a hint that
 // reproduces the very error it is meant to resolve. So widen until the inequality actually holds:
-// 17 significant digits round-trips any double exactly, and String(x) is exact regardless, so the
-// loop always terminates on a value that passes.
+// 17 significant digits round-trips any double exactly, so for a finite positive x the loop always
+// terminates on a value that passes. The gate is for x itself leaving that range: Infinity survives
+// toPrecision() as "Infinity" and satisfies any one-sided ok(), and 0 satisfies the short side's,
+// yet both fail num() on the rerun. null means no representable positive price is on the profitable
+// side — the same answer bump() gives, so both rounding helpers follow one rule.
 function profitable(x, ok) {
   for (let p = 3; p <= 17; p++) {
     const v = Number(x.toPrecision(p));
-    if (ok(v)) return v;
+    if (v > 0 && Number.isFinite(v) && ok(v)) return v;
   }
-  return x;
+  return null;
 }

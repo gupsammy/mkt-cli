@@ -114,7 +114,7 @@ for (const [name, args, env] of FAILING) {
     // listed HERE is one we claim is correctable, so taking this branch is a finding, not a pass:
     // the example hint is verified runnable, then the row fails naming the downgrade — checked before
     // the explicitness loop so the red says what happened instead of misreporting "hint omits --risk".
-    if (/sizes one share here/.test(failed.stderr)) {
+    if (/the hint is an example, not a correction/.test(failed.stderr)) {
       assert.equal(run(hintArgv(failed.hint), env).code, 0, `example hint does not run: ${failed.hint}`);
       assert.fail(`no sizing correction exists for a correctable input: mkt size ${args.join(' ')}`);
     }
@@ -192,6 +192,13 @@ const INVALID = [
   // FAILING's trip-wire is for rows that cross unexpectedly.
   ['denormal risk that no finite account can satisfy',
     ['--entry', '5000', '--stop', '4999', '--account', '6000', '--risk', '5e-324']],
+  // The target twins of the row above, at both ends of the number line: entry + 2R overflows to
+  // Infinity on the long side, entry / 2 underflows to 0 on the short side — either suggestion
+  // would fail num() on the rerun, so profitable() refuses and the example tier says why.
+  ['losing target whose correction would overflow to Infinity',
+    ['--entry', '1e308', '--stop', '1', '--risk', '100', '--max-pct', '100', '--target', '0.5']],
+  ['losing target whose correction would underflow to zero',
+    ['--entry', '5e-324', '--stop', '1', '--target', '1']],
 ];
 
 for (const [name, args, env] of INVALID) {
@@ -220,7 +227,9 @@ test('every hint-emitting input in the grid resolves in one step', () => {
   for (const entry of [0.01, 1.07, 50, 1234.56, 9000])
     for (const stop of [0.0001, 1, 47, 4999, 7000])
       for (const account of [100, 6000])
-        for (const [risk, cap] of [[1, 25], [0.01, 1], [0.75, 100], [100, 25]])
+        // 5e-324 puts one denormal in the box: every overflow bug so far lived at the ends of the
+        // number line, outside the sane-value grid that therefore couldn't see any of them.
+        for (const [risk, cap] of [[1, 25], [0.01, 1], [0.75, 100], [100, 25], [5e-324, 25]])
           for (const target of [null, entry * (stop < entry ? 0.9 : 1.1), entry * (stop < entry ? 1.2 : 0.8)]) {
             const args = ['--entry', `${entry}`, '--stop', `${stop}`,
               '--account', `${account}`, '--risk', `${risk}`, '--max-pct', `${cap}`,
@@ -283,6 +292,12 @@ test('a hint that moves a limit says so, not just what was asked about', () => {
   // ...and the denormal-risk input, where no finite correction exists at all, says that instead.
   const noFix = run(['--entry', '5000', '--stop', '4999', '--account', '6000', '--risk', '5e-324']);
   assert.match(noFix.stderr, /sizes one share here; the hint is an example/);
+
+  // A refused target suggestion gets its own sentence, not NO_FIX's — here a sizing correction
+  // (an account) does exist, so "no account sizes a share" would be false; the missing piece is a
+  // representable price on the profitable side of a 1e308 entry.
+  const noTarget = run(['--entry', '1e308', '--stop', '1', '--risk', '100', '--max-pct', '100', '--target', '0.5']);
+  assert.match(noTarget.stderr, /No representable price is on the profitable side/);
 
   // ...and a target error with no sizing problem does not claim one.
   const plain = run(['--entry', '50', '--stop', '47', '--target', '40']);
