@@ -1,4 +1,5 @@
-import { scan, MktError } from '../providers/tradingview.js';
+import { scan } from '../providers/tradingview.js';
+import { MktError } from '../errors.js';
 import { printRows } from '../output.js';
 
 // Compact but useful default row for a live snapshot.
@@ -11,7 +12,6 @@ export default async function quote({ positionals, flags }) {
 
   const { rows } = await scan({ region, columns: COLS, symbols, range: [0, symbols.length] });
   if (!rows.length) throw new MktError('not_found', `No data for: ${symbols.join(', ')}.`, `mkt search ${symbols[0].split(':').pop()} --json`);
-  const out = rows.map((r) => ({ symbol: r.s, ...Object.fromEntries(COLS.map((c, i) => [c, r.d[i]])) }));
-  printRows(out, flags);
+  printRows(rows, flags);
   return 0;
 }
