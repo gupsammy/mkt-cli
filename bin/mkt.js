@@ -102,7 +102,8 @@ COMMANDS
   regions   List universes:     mkt regions
   record    Append daily snapshot to ~/.mkt/snapshots/<region>/<date>.ndjson.gz
             (refuses pre-close NY time — would mislabel the previous session; --force overrides)
-  ingest    Load NEW snapshots into ~/.mkt/mkt.db (incremental; --all = full replay; --prune deprecated)
+  ingest    Load NEW snapshots into ~/.mkt/mkt.db (incremental; --all = full replay;
+            --prune deprecated, implies --all — re-reads the whole archive)
   backup    Mirror gz archive + a consistent DB dump to durable storage (default iCloud) [--to DIR]
   sql       Query the panel:     mkt sql "SELECT symbol,RSI FROM snapshots WHERE RSI<30"
   alert     Edge-triggered alerts: add <name> --where '<expr>' (live) | --sql "<SELECT>" (panel)

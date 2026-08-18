@@ -27,7 +27,9 @@ async function ingestFile(file, db, stmt, region) {
 // rebuild: fresh machine, restored archive, relabeled days).
 // --prune is DEPRECATED and not used by the scheduled job: the gz archive is the source of truth and
 // is kept forever (it is unrecoverable; the DB is a projection this command can always rebuild from
-// it). It still deletes gz >30d after a verified round-trip if you ask for it. See `mkt backup`.
+// it). It still deletes gz >30d after a verified round-trip if you ask for it — and it implies
+// --all (re-reads the whole archive), since the round-trip is only verified for replayed files.
+// See `mkt backup`.
 export default async function ingest({ flags }) {
   const region = flags.region || 'america';
   const dir = path.join(home(), 'snapshots', region);

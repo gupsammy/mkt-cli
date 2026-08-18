@@ -54,6 +54,11 @@ export default async function record({ flags }) {
         `${Math.round(ratio * 1000) / 10}% of ${compared} closes are identical to ${prev} — market likely closed (holiday?); refusing to record a phantom session as ${date}.`,
         'mkt record --force if this is truly a new session');
     }
+    // A would-have-fired match suppressed by a small sample means the PREVIOUS file is suspect
+    // (thin/truncated) — that must not pass unremarked either.
+    if (ratio > 0.99 && compared < 100 && !flags.quiet) {
+      process.stderr.write(`# staleness guard: only ${compared} comparable closes vs ${prev} (need 100) — too few to trust, proceeding\n`);
+    }
   } else if (!flags.force && !flags.quiet) {
     process.stderr.write(`# staleness guard skipped: close not in --columns\n`);
   }
