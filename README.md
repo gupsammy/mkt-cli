@@ -45,7 +45,8 @@ Operators: `< <= > >= = != between has`. OR/nested groups are Phase 2.
 ## Output & exit codes
 - Human table by default; `--json` = NDJSON (lists) / JSON (scalars); `--compact` = minified.
 - Data → stdout, diagnostics → stderr.
-- `0` ok · `1` generic · `2` usage/bad-filter/bad-column · `3` not-found · `4` auth · `5` upstream.
+- `0` ok · `1` generic/partial · `2` usage/bad-filter/bad-column · `3` not-found/unknown-symbol ·
+  `4` auth · `5` upstream · `7` conflict.
 - With `--json`, errors are `{"error","message","hint"}` on stderr; `hint` is an executable command.
 
 ## Data recording + the panel (the point)

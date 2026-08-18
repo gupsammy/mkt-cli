@@ -72,9 +72,11 @@ jobs:
               breaks the agent-facing contract. `hint` should be a runnable command.
             - Data goes to stdout, diagnostics/errors to stderr — never mixed.
             - New commands must print via `printRows`/`printObject`, not `console.log`.
-            - Any new value-taking flag MUST be added to `VALUE_FLAGS` in `bin/mkt.js`, and any
-              repeatable flag to `REPEATABLE`. This registry is manual and silently mis-parses the
-              flag if missed — check it explicitly on every PR that adds a flag.
+            - Any new flag MUST be registered in that command's entry in the `SPEC` object in
+              `bin/mkt.js`: value-taking flags in `value`, repeatable flags in `repeat`, booleans in
+              `bool`. This registry is manual, and a flag missing from it parses as boolean `true`
+              with its value leaking into positionals — silent mis-parse, no error. Check it
+              explicitly on every PR that adds a flag.
             - New fields belong in `schema.js` `WIDE` only; recorder and DB derive from it. A field
               added to one side but not `WIDE` is schema drift.
 
