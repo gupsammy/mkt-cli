@@ -87,8 +87,9 @@ export default async function record({ flags }) {
 // launchd timeout, an overlapping run) destroys a snapshot the scanner cannot re-serve. The tmp is
 // pid-scoped so concurrent runs can't rename each other's half-written bytes into place; pipeline()
 // makes a gzip error reject instead of going unobserved and honors the compressor's backpressure;
-// `flush` fsyncs the fd before close so the rename never publishes bytes the OS hasn't persisted.
-// Exported for testing.
+// `flush` fsyncs the fd before close so the rename never publishes bytes the OS hasn't persisted —
+// on Node < 20.10 the option is silently ignored (no fsync, no error), hence the engines floor in
+// package.json. Exported for testing.
 export async function writeSnapshotGz(file, date, rows) {
   const tmp = `${file}.${process.pid}.tmp`;
   try {

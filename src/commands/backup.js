@@ -127,18 +127,28 @@ export default async function backup({ flags }) {
   }
 
   for (const region of regions) {
+    // The SOURCE archive needs the same sweep: `record` stages to <date>.ndjson.gz.<pid>.tmp right
+    // next to the archive files, and a SIGKILLed run orphans it there — the one directory whose rule
+    // is "never delete anything", where a leftover looks like archive data to a human doing a
+    // restore. Nothing else collects it (record's catch can't run after SIGKILL; ingest and the
+    // mirror loop filter on .ndjson.gz). The 24h age gate keeps a concurrently-recording run's tmp.
+    sweepStale(path.join(src, region));
     const todayName = `${todayFor(region)}.ndjson.gz`;
     for (const name of fs.readdirSync(path.join(src, region)).filter((f) => f.endsWith('.ndjson.gz'))) {
       const from = path.join(src, region, name);
       const to = path.join(dstSnap, region, name);
-      // `record` rewrites today's file in place (idempotent), so it is always re-published. A past day
-      // is re-published only when the mirror disagrees on size — a run interrupted mid-copy.
+      // `record` replaces today's file on every run (idempotent stage→fsync→rename), so it is always
+      // re-published. A past day is re-published only when the mirror disagrees on size — a run
+      // interrupted mid-copy.
       const isToday = name === todayName;
       const mirrored = fs.existsSync(to);
       if (!isToday && mirrored && fs.statSync(to).size === fs.statSync(from).size) continue;
       if (await publish(from, to)) refreshed++;
-      else if (isToday) deferred.push(`${region}/${name}`);   // race with `record`; retried next run
-      // Today failing is a benign race with `record`. A past day is immutable, so it is real
+      else if (isToday) deferred.push(`${region}/${name}`);   // retried next run; expected empty now
+      // Today failing used to be a benign race with `record`'s in-place write; since record publishes
+      // atomically a copy can no longer observe a mid-write stream, so `deferred` is EXPECTED to be
+      // empty — if it fires, today's source file itself is bad, and the next record run replaces it
+      // anyway, so defer stays the right response. A past day is immutable, so it is real
       // corruption — but only *unmirrored* corruption is a loss: if a verified copy is already in the
       // backup, this command did its job and the archive is safe.
       else if (!isToday) {
@@ -199,8 +209,10 @@ export default async function backup({ flags }) {
 }
 
 // Copy through a temp file and verify the gzip stream decompresses before replacing the live mirror.
-// `record` writes the day's file in place, so a concurrent copy can capture a truncated stream —
-// staging keeps a good previous backup rather than overwriting it with a corrupt one.
+// `record` publishes atomically now, so a concurrent copy can no longer capture a mid-write stream;
+// staging still matters because the source can be bad for other reasons (bit rot, truncation that
+// predates the staged writer) — verify-then-rename keeps a good previous backup rather than
+// overwriting it with a corrupt copy.
 //
 // Only a failed *integrity check* returns false. A failed copy or rename (ENOSPC, EACCES, a vanished
 // backup volume) throws: a full disk and a benign mid-write race must not collapse into the same
