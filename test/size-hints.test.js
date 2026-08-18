@@ -108,6 +108,16 @@ for (const [name, args, env] of FAILING) {
     assert.equal(failed.code, 2, `expected a usage failure\n${failed.stderr}`);
     assert.ok(failed.hint, `no hint offered\n${failed.stderr}`);
 
+    // The one runtime downgrade to the example tier: no suggested account/risk/cap clears one share
+    // (bump() returning null — never observed across the sweep, measured rather than proven). The
+    // message announces it, so the suite keys on that sentence instead of carrying a copy of the
+    // example string; without this escape, the explicitness loop below would misreport the condition
+    // as "hint omits --risk" — a wrong diagnosis in a suite whose value is that a red is specific.
+    if (/sizes one share here/.test(failed.stderr)) {
+      assert.equal(run(hintArgv(failed.hint), env).code, 0, `example hint does not run: ${failed.hint}`);
+      return;
+    }
+
     const asked = flagsOf(args);
     const offered = flagsOf(hintArgv(failed.hint));
 
@@ -118,8 +128,9 @@ for (const [name, args, env] of FAILING) {
       assert.ok(flag in offered, `hint omits --${flag}; a correction must spell out every resolved flag`);
     }
 
-    // Compared as flag sets, not strings: hint() emits a fixed flag order, so a string compare misses
-    // a hint that is the failing command reordered.
+    // Kept for its failure message only — explicitness subsumed it. A correction now always emits
+    // 5-6 flags while callers pass 2-4, so the sets differ before any value is compared; there is no
+    // reachable input left where this is the assertion that fires. Do not count it as coverage.
     assert.notDeepEqual(offered, asked, 'hint is the failing command with its flags reordered');
 
     for (const [flag, value] of Object.entries(asked)) {
@@ -138,9 +149,14 @@ for (const [name, args, env] of FAILING) {
       }
     }
 
-    // The paste-back itself, under the same env the hint was issued in: one step, exit 0.
-    const rerun = run(hintArgv(failed.hint), env);
+    // The paste-back itself, under the same env the hint was issued in: one step, exit 0. --compact
+    // so the offered values can be checked against what the rerun RESOLVED them to: explicitness
+    // removed the omission gap, not the assumption that the parser reads back what the hint wrote.
+    const rerun = run([...hintArgv(failed.hint), '--compact'], env);
     assert.equal(rerun.code, 0, `hint does not resolve: ${failed.hint}\n${rerun.stderr}`);
+    const sized = JSON.parse(rerun.stdout);
+    assert.equal(sized.account, Number(offered.account), 'rerun resolved a different --account than the hint spelled');
+    assert.equal(sized.max_pct, Number(offered['max-pct']), 'rerun resolved a different --max-pct than the hint spelled');
   });
 }
 
@@ -228,6 +244,11 @@ test('a hint that moves a limit says so, not just what was asked about', () => {
   assert.match(r.stderr, /losing side/);
   assert.match(r.stderr, /does not size at these limits/);
   assert.match(r.hint, /--max-pct 84/);
+
+  // The account arm is worded separately: there the limits come back untouched and it is --account
+  // that moves — here 6000 → 690000, a 115x raise the generic "corrects both" sentence never named.
+  const acct = run(['--entry', '100', '--stop', '7000', '--account', '6000', '--target', '200']);
+  assert.match(acct.stderr, /raises --account to \$690000/);
 
   // ...and a target error with no sizing problem does not claim one.
   const plain = run(['--entry', '50', '--stop', '47', '--target', '40']);

@@ -94,21 +94,25 @@ export default async function size({ flags }) {
     const better = (v) => (side === 'long' ? v > entry : v < entry);
     // The hint may also raise a limit here, and --max-pct is the flag whose whole job is to cap
     // exposure. Both sizing branches explain themselves when they move it; this one has to as well,
-    // or the user pastes back a command that quietly quadruples their position size.
-    const also = sizingFix && Object.keys(sizingFix).length
-      ? ' The position does not size at these limits either, so the hint corrects both.' : '';
+    // or the user pastes back a command that quietly quadruples their position size. The account arm
+    // is worded separately: there "these limits" come back untouched and it is --account that moves —
+    // often by orders of magnitude — so the message names the flag and the value.
+    const also = !sizingFix ? NO_FIX
+      : !Object.keys(sizingFix).length ? ''
+      : sizingFix.acct ? ` The position does not size at all at these limits — the hint also raises --account to $${sizingFix.acct}.`
+      : ' The position does not size at these limits either, so the hint corrects both.';
     throw new MktError('usage',
       `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.${also}`,
       sizingFix ? hint({ ...sizingFix, target: profitable(twoR, better) }) : EXAMPLE);
   }
   if (byRisk < 1) {
     throw new MktError('usage',
-      `Stop is too wide for the risk budget: $${round(riskDollars)} at $${round(riskPerShare)}/share is under one share.`,
+      `Stop is too wide for the risk budget: $${round(riskDollars)} at $${round(riskPerShare)}/share is under one share.${sizingFix ? '' : NO_FIX}`,
       sizingFix ? hint(sizingFix) : EXAMPLE);
   }
   if (byCap < 1) {
     throw new MktError('usage',
-      `Position cap (--max-pct ${maxPct}% = $${round(cap)}) is below one share at $${entry}.`,
+      `Position cap (--max-pct ${maxPct}% = $${round(cap)}) is below one share at $${entry}.${sizingFix ? '' : NO_FIX}`,
       sizingFix ? hint(sizingFix) : EXAMPLE);
   }
   const shares = Math.min(byRisk, byCap);   // floor throughout: actual risk is always <= stated risk
@@ -157,6 +161,13 @@ function bump(v, step, clears) {
   for (let i = 0; i < 2 && !clears(v); i++) v = round(v + step);
   return clears(v) ? v : null;
 }
+
+// sizingFix === null is the one place a CORRECTABLE input falls back to the example tier at runtime:
+// no suggested account, risk or cap clears one share. bump() has never returned null across the
+// 112,488-evaluation sweep, but that is measured, not proven — so when it happens the message says
+// what changed tiers instead of silently handing over a different trade. The suite keys its
+// example-tier handling on this sentence rather than carrying a copy of EXAMPLE's text.
+const NO_FIX = ' No account, risk or cap this command can suggest sizes one share here; the hint is an example, not a correction.';
 
 // The shape of a valid invocation, shown when the caller's own numbers are unusable. Not fully
 // explicit like a correction hint — it teaches shape, not values — but --account is pinned because
