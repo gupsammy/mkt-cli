@@ -80,6 +80,13 @@ export default async function backup({ flags }) {
   const chk = new Database(dbTmp, { readonly: true });
   let ok;
   try { ok = chk.pragma('quick_check', { simple: true }); } finally { chk.close(); }
+  //    The dump inherits journal_mode=wal from the source, so merely opening it above created
+  //    `<dbTmp>-shm`/`-wal`, and a readonly connection cannot delete them on close. renameSync below
+  //    moves only dbTmp, so without this they orphan — one pid-scoped pair per run, forever, in the
+  //    directory you would read during a restore. sweepStale's `.tmp` filter and the retention regex
+  //    both miss them (the suffix is `.tmp-shm`), so nothing downstream would ever collect them.
+  fs.rmSync(`${dbTmp}-shm`, { force: true });
+  fs.rmSync(`${dbTmp}-wal`, { force: true });
   if (ok !== 'ok') {
     fs.rmSync(dbTmp, { force: true });
     throw new MktError('conflict', `DB dump failed integrity check: ${ok}.`, 'mkt ingest --region america');
@@ -138,7 +145,9 @@ export default async function backup({ flags }) {
   //    A failed dump throws before the rename above, so anything named mkt-<date>.db is complete.
   const dumps = fs.readdirSync(dbDir).filter((f) => /^mkt-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort();
   let pruned = 0;
-  for (const f of dumps.slice(0, Math.max(0, dumps.length - KEEP_DB_DUMPS))) { fs.rmSync(path.join(dbDir, f)); pruned++; }
+  // force: a dump removed by a concurrent run would otherwise throw here, failing a backup whose
+  // real work is already done and published.
+  for (const f of dumps.slice(0, Math.max(0, dumps.length - KEEP_DB_DUMPS))) { fs.rmSync(path.join(dbDir, f), { force: true }); pruned++; }
 
   printObject({
     backed_up_to: dir, db_dump: path.basename(dbDest), db_mb: Math.round(fs.statSync(dbDest).size / 1e5) / 10,
@@ -202,9 +211,14 @@ async function publish(from, to) {
 function sweepStale(dir) {
   if (!fs.existsSync(dir)) return;
   const cutoff = Date.now() - 86_400_000;
-  for (const f of fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'))) {
+  // Sidecars are matched too: a run killed between the quick_check open and the rename leaves
+  // `<name>.tmp-shm`/`-wal` behind, which the bare `.tmp` suffix would not catch.
+  for (const f of fs.readdirSync(dir).filter((f) => /\.tmp(-shm|-wal)?$/.test(f))) {
     const p = path.join(dir, f);
-    if (fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p, { force: true });
+    // statSync can lose a race with a concurrent run renaming its staged file into place; a vanished
+    // file is already the outcome we wanted, so skip it rather than crash a backup that succeeded.
+    const st = fs.statSync(p, { throwIfNoEntry: false });
+    if (st && st.mtimeMs < cutoff) fs.rmSync(p, { force: true });
   }
 }
 
