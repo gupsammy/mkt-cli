@@ -3,7 +3,7 @@ import { scan, fieldSet } from '../providers/tradingview.js';
 import { MktError } from '../errors.js';
 import { parseWhere, validateColumns } from '../filter.js';
 import { notify } from '../notify.js';
-import { printRows, printObject } from '../output.js';
+import { printRows, printObject, EXIT } from '../output.js';
 
 const ALERT_MAX = 2000;                 // live-alert match cap; a selective alert stays well under this
 const now = () => new Date().toISOString();
@@ -141,8 +141,9 @@ async function check(db, flags) {
   if (!flags.quiet) process.stderr.write(`# checked=${alerts.length}${dry ? ' (dry-run)' : ''}\n`);
   for (const s of summary) printRows([s], flags);
   // A failed alert must not exit 0 forever — the scheduler's log line on a non-zero exit is the
-  // only place a broken query ever surfaces. The healthy alerts above still ran and notified.
-  return errored ? 1 : 0;
+  // only place a broken query ever surfaces. EXIT.generic = partial success: the healthy alerts
+  // above still ran and notified.
+  return errored ? EXIT.generic : EXIT.ok;
 }
 
 function getAlert(db, name) {

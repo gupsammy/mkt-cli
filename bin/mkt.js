@@ -123,6 +123,7 @@ async function main() {
   try { ({ cmd, positionals, flags } = parse(argv)); }
   catch (err) { return printError(err, { json: jsonish }); }
 
+  if (flags['no-color']) process.env.NO_COLOR = '1';   // output.js reads the env; wire the flag to it
   if (flags.version) { process.stdout.write(VERSION + '\n'); return 0; }
   if (!cmd || cmd === 'help') { process.stdout.write(HELP + '\n'); return 0; }
   if (!COMMANDS[cmd]) {

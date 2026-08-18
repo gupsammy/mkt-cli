@@ -26,7 +26,9 @@ record   --region america                        # append daily wide snapshot (s
   `<col> between a,b`, `<col> has v`, `close > SMA200` (column-vs-column), `RSI|60 < 30` (intraday).
 - `--liquid`: prepends the real-US-stock floor (common, >$1B cap, >$5, >500k vol). Use on `america`;
   no-op on forex/crypto/econ. Without it, `screen` surfaces penny/OTC base-effect junk.
-- Exit codes: `0` ok, `2` usage/bad-filter/bad-column, `3` not-found, `5` upstream. Errors in `--json`
+- Exit codes: `0` ok, `1` generic/partial (an `alert check` with an errored alert — healthy alerts
+  still ran), `2` usage/bad-filter/bad-column, `3` not-found, `5` upstream, `7` conflict (duplicate
+  resource, or `record` refusing pre-close/holiday — nothing written). Errors in `--json`
   are `{error,message,hint}` on stderr; `hint` is a runnable command.
 - Column typos are validated against `/metainfo` BEFORE the scan (the scanner returns null, not an
   error, for unknown columns).

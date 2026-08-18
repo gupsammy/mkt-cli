@@ -55,6 +55,9 @@ function migrate(db) {
   // Symbol-major access path: per-symbol time series (self-joins, journal marks) would otherwise
   // scan the whole date-major primary key.
   db.exec(`CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_date ON snapshots(symbol, date);`);
+  // Ingest's high-water mark (MAX(date) WHERE region=?) — without this it is a full scan for any
+  // region not yet present, every night.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_snapshots_region_date ON snapshots(region, date);`);
 
   // Alerts (spec §12). Definitions + edge-trigger memory both live here, not a JSON side-file.
   // kind: 'live' (query = newline-joined --where exprs, run against the live scanner) or
@@ -75,16 +78,26 @@ function migrate(db) {
     FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE);`);
   const hitCols = new Set(db.prepare(`PRAGMA table_info(alert_hits)`).all().map((r) => r.name));
   if (!hitCols.has('departed')) {
-    db.exec(`ALTER TABLE alert_hits RENAME TO alert_hits_v1;
-      CREATE TABLE alert_hits (
-        alert_id INTEGER NOT NULL, symbol TEXT NOT NULL,
-        first_seen TEXT NOT NULL, departed TEXT,
-        PRIMARY KEY (alert_id, symbol, first_seen),
-        FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE);
-      INSERT INTO alert_hits (alert_id, symbol, first_seen)
-        SELECT alert_id, symbol, first_seen FROM alert_hits_v1;
-      DROP TABLE alert_hits_v1;`);
+    // Atomic on purpose: multi-statement exec commits per statement, so a crash after the RENAME
+    // would orphan the v1 data forever — the CREATE IF NOT EXISTS above already made the v2 shape,
+    // so this branch could never run again. One transaction makes the rebuild all-or-nothing.
+    db.transaction(() => {
+      db.exec(`ALTER TABLE alert_hits RENAME TO alert_hits_v1;
+        CREATE TABLE alert_hits (
+          alert_id INTEGER NOT NULL, symbol TEXT NOT NULL,
+          first_seen TEXT NOT NULL, departed TEXT,
+          PRIMARY KEY (alert_id, symbol, first_seen),
+          FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE);
+        INSERT INTO alert_hits (alert_id, symbol, first_seen)
+          SELECT alert_id, symbol, first_seen FROM alert_hits_v1;
+        DROP TABLE alert_hits_v1;`);
+    })();
   }
+  // One ACTIVE stint per (alert, symbol): the widened PK alone would let two overlapping `check`
+  // runs (a slow live scan vs the next 15-min firing) both insert; INSERT OR IGNORE needs this
+  // index to turn the second insert into a no-op. Closed stints (departed set) are exempt.
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_hits_active
+    ON alert_hits(alert_id, symbol) WHERE departed IS NULL;`);
 
   // Watchlists (spec §1): hand-populated sets of symbols. A screen/alert can scope to one instead of
   // a whole region. kind: 'equity' (scanner-visible) or 'macro' (quote/history-scoped).

@@ -81,9 +81,14 @@ export default async function backup({ flags }) {
   }
   //    quick_check before publishing: the gz mirror is gunzip-verified, and the dump is the one
   //    artifact you would restore from that nothing else validates.
-  const chk = new Database(dbTmp, { readonly: true });
   let ok;
-  try { ok = chk.pragma('quick_check', { simple: true }); } finally { chk.close(); }
+  try {
+    const chk = new Database(dbTmp, { readonly: true });
+    try { ok = chk.pragma('quick_check', { simple: true }); } finally { chk.close(); }
+  } catch (e) {
+    rmTmp();   // a THROWING quick_check (unopenable tmp) must not leak the staging trio either
+    throw e;
+  }
   if (ok !== 'ok') {
     rmTmp();
     throw new MktError('conflict', `DB dump failed integrity check: ${ok}.`, 'mkt ingest --region america');

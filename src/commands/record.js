@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import zlib from 'node:zlib';
+import readline from 'node:readline';
 import { scan, fieldSet } from '../providers/tradingview.js';
 import { MktError } from '../errors.js';
 import { validateColumns } from '../filter.js';
@@ -40,6 +41,19 @@ export default async function record({ flags }) {
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${date}.ndjson.gz`);   // gzipped NDJSON; idempotent (overwrite today)
 
+  // Session-staleness guard: the clock guard can't see market holidays — 17:00 ET on July 4 is
+  // "after the close" of a session that never happened, and the scanner just re-serves the last
+  // one. If ~every symbol's close is identical to the newest already-recorded day, this is that
+  // day again: refuse rather than write a phantom session the panel would read as 0% change.
+  if (!flags.force && columns.includes('close')) {
+    const { ratio, prev } = await sameCloseRatio(dir, date, rows);
+    if (ratio > 0.99) {
+      throw new MktError('conflict',
+        `${Math.round(ratio * 1000) / 10}% of closes are identical to ${prev} — market likely closed (holiday?); refusing to record a phantom session as ${date}.`,
+        'mkt record --force if this is truly a new session');
+    }
+  }
+
   // Gzip on the fly (~8× smaller than plain NDJSON). Read back with `gzcat file | jq`.
   const gzip = zlib.createGzip();
   const out = fs.createWriteStream(file);
@@ -52,4 +66,27 @@ export default async function record({ flags }) {
   const bytes = fs.statSync(file).size;
   printObject({ recorded: rows.length, region, date, columns: columns.length, size_mb: Math.round(bytes / 1e5) / 10, file }, flags);
   return 0;
+}
+
+// Fraction of symbols whose close matches the newest recorded day BEFORE `date` (today's own file
+// is excluded — re-recording the same day is legitimately identical). Exported for testing.
+export async function sameCloseRatio(dir, date, rows) {
+  const prevFile = fs.readdirSync(dir)
+    .filter((f) => f.endsWith('.ndjson.gz') && f.replace('.ndjson.gz', '') < date)
+    .sort().pop();
+  if (!prevFile) return { ratio: 0, prev: null };
+  const prev = new Map();
+  const rl = readline.createInterface({ input: fs.createReadStream(path.join(dir, prevFile)).pipe(zlib.createGunzip()) });
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    const r = JSON.parse(line);
+    if (r.close != null) prev.set(r.symbol, r.close);
+  }
+  let same = 0, compared = 0;
+  for (const r of rows) {
+    if (r.close == null || !prev.has(r.symbol)) continue;
+    compared++;
+    if (prev.get(r.symbol) === r.close) same++;
+  }
+  return { ratio: compared ? same / compared : 0, prev: prevFile.replace('.ndjson.gz', '') };
 }

@@ -68,7 +68,13 @@ export default async function ingest({ flags }) {
   const totalRows = db.prepare(`SELECT COUNT(*) c FROM snapshots`).get().c;
   const dates = db.prepare(`SELECT COUNT(DISTINCT date) c FROM snapshots`).get().c;
   db.close();
-  printObject({ ingested, files: filesDone, skipped: files.length - todo.length, pruned, db_rows: totalRows, db_dates: dates, region }, flags);
+  const skipped = files.length - todo.length;
+  // A restored/partially-replayed archive is invisible in a bare count — say what was skipped and
+  // how to replay it, so "skipped" never silently reads as "covered".
+  if (skipped && !flags.quiet) {
+    process.stderr.write(`# skipped=${skipped} file(s) before ${maxDate} (already ingested); mkt ingest --all replays everything\n`);
+  }
+  printObject({ ingested, files: filesDone, skipped, pruned, db_rows: totalRows, db_dates: dates, region }, flags);
   return 0;
 }
 
