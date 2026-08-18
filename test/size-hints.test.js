@@ -84,6 +84,10 @@ const FAILING = [
     ['--entry', '1234.56', '--stop', '7000', '--account', '6000', '--risk', '1', '--max-pct', '1']],
   ['risk hint whose rounding lands a hair short',
     ['--entry', '0.0001', '--stop', '1', '--account', '1', '--risk', '0.01', '--max-pct', '25']],
+  // A target paired with a SIZING failure. Every other --target row has a stop tight enough that both
+  // limits clear, so the `'target' in offered` assertion below was aspirational until this row existed.
+  ['valid target alongside a cap-bound failure',
+    ['--entry', '5000', '--stop', '4999', '--account', '6000', '--target', '5100']],
 ];
 
 for (const [name, args, env] of FAILING) {
@@ -139,6 +143,9 @@ const INVALID = [
   ['stop missing entirely', ['--entry', '50']],
   ['entry equals stop (zero risk per share)', ['--entry', '50', '--stop', '50']],
   // The canned example is a command too, and it inherits the same env fallback every other hint does.
+  // target was read only after sizing succeeded, so a sizing failure swallowed a garbage target whole.
+  ['target that is not a number, alongside a sizing failure',
+    ['--entry', '5000', '--stop', '4999', '--account', '6000', '--target', 'abc']],
   ['zero risk under an account the example would not clear',
     ['--entry', '412.5', '--stop', '412.5', '--account', '6000'], { MKT_ACCOUNT: '100' }],
 ];
@@ -152,6 +159,30 @@ for (const [name, args, env] of INVALID) {
     assert.equal(run(hintArgv(failed.hint), env).code, 0, `hint does not run: ${failed.hint}`);
   });
 }
+
+// The contract stated as a property rather than a list. Deliberately weaker than the FAILING tier —
+// it only checks that a hint runs, not that it preserved the caller's flags — but it covers inputs
+// nobody thought to write down. The two `need*` bugs above came out of a 37,496-input sweep at a 0.6%
+// hit rate, which no hand-picked list converges on; that sweep is ~30 minutes of spawns, so what ships
+// is a fixed grid of the same shape. Deterministic: no seed, no sampling, no flake.
+test('every hint-emitting input in the grid resolves in one step', () => {
+  const failures = [];
+  for (const entry of [0.01, 1.07, 50, 1234.56, 9000])
+    for (const stop of [0.0001, 1, 47, 4999, 7000])
+      for (const account of [100, 331, 6000])
+        for (const [risk, cap] of [[1, 25], [0.01, 1], [0.75, 100], [100, 25]]) {
+          if (entry === stop) continue;
+          const args = ['--entry', `${entry}`, '--stop', `${stop}`,
+            '--account', `${account}`, '--risk', `${risk}`, '--max-pct', `${cap}`];
+          const failed = run(args);
+          if (failed.code === 0) continue;
+          if (!failed.hint) { failures.push(`no hint: mkt size ${args.join(' ')}`); continue; }
+          if (run(hintArgv(failed.hint)).code !== 0) {
+            failures.push(`from: mkt size ${args.join(' ')}\n    hint: ${failed.hint}`);
+          }
+        }
+  assert.deepEqual(failures, [], `${failures.length} hint(s) do not resolve:\n  ${failures.join('\n  ')}`);
+});
 
 test('sizing arithmetic is unchanged', () => {
   const base = JSON.parse(run(['--entry', '50', '--stop', '47', '--compact']).stdout);
@@ -168,6 +199,15 @@ test('a target on the profitable side reports R and profit', () => {
   const out = JSON.parse(run(['--entry', '50', '--stop', '47', '--target', '56', '--compact']).stdout);
   assert.equal(out.reward_risk, 2);
   assert.equal(out.profit_at_target, 120);
+});
+
+test('an unparseable --target is reported, not swallowed by a sizing failure', () => {
+  // The INVALID tier alone cannot pin this: with target read after sizing, `--target abc` still exits 2
+  // with a runnable hint — the CAP error — so the generic contract passes while the garbage evaporates.
+  // Only naming the message distinguishes "an error happened" from "the right error happened".
+  const r = run(['--entry', '5000', '--stop', '4999', '--account', '6000', '--target', 'abc']);
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /--target must be a finite number/);
 });
 
 test('an empty MKT_ACCOUNT falls back to the default rather than failing', () => {

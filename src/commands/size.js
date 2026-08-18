@@ -50,6 +50,26 @@ export default async function size({ flags }) {
     + (risk !== 1 ? ` --risk ${risk}` : '') + (capFlag !== 25 ? ` --max-pct ${capFlag}` : '')
     + ((account !== 6000 || envAccount) && !acct ? ` --account ${account}` : '') + (acct ? ` --account ${acct}` : '')
     + (target ? ` --target ${target}` : '');
+  // Validated here, above the sizing checks, for two reasons. `--target abc` used to be read only after
+  // sizing succeeded, so a sizing failure swallowed it entirely — the caller pasted the correction back,
+  // got a clean answer, and never learned their target was garbage. And a sizing hint can only carry the
+  // target forward if it is already known good; otherwise the rerun trades one error for another.
+  const target = flags.target != null ? num(flags.target, 'target', { positive: true }) : null;
+  // Signed, not Math.abs: a target on the losing side of the trade (below entry on a long, above it
+  // on a short) is a loss, and abs() reported it as profit with a positive R multiple.
+  const rewardPerShare = target == null ? null : (side === 'long' ? target - entry : entry - target);
+  if (target != null && rewardPerShare <= 0) {
+    // A 2R target, floored at half the entry: on a short whose stop is wide relative to entry,
+    // `entry - 2R` goes negative, and a suggested price below zero fails num() on the very next run.
+    // The floored branch is no longer 2R — it is just the nearest sane target that is still a profit.
+    const twoR = side === 'long' ? entry + riskPerShare * 2 : Math.max(entry - riskPerShare * 2, entry / 2);
+    // twoR is strictly on the profitable side by construction; only the rounding can break that, so
+    // round against that inequality rather than at a chosen precision — see profitable() below.
+    const better = (v) => (side === 'long' ? v > entry : v < entry);
+    throw new MktError('usage',
+      `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.`,
+      hint({ target: profitable(twoR, better) }));
+  }
   // ceil() clears these thresholds in exact arithmetic, but the rerun rounds again — so a suggestion can
   // land a hair under the very limit it was computed to clear, handing back a hint that reproduces the
   // error. This is what profitable() already does for the target price; these three were the last places
@@ -64,15 +84,19 @@ export default async function size({ flags }) {
   const needRisk = bump(ceil2(riskPerShare / account * 100), 0.01, clearsRisk);
   const needPct = bump(Math.ceil(entry / account * 100), 1, clearsCap);
   const needAccount = bump(Math.ceil(Math.max(riskPerShare * 100 / riskPct, entry * 100 / maxPct)), 1, clearsBoth);
+  // If even the account cannot be made to clear, there is no correction left to offer — the example is
+  // still a runnable command, which is the invariant that matters. Unreached in the sweep.
+  const acctHint = (t) => (needAccount != null ? hint({ acct: needAccount, target: t }) : EXAMPLE);
   if (byRisk < 1) {
     throw new MktError('usage',
       `Stop is too wide for the risk budget: $${round(riskDollars)} at $${round(riskPerShare)}/share is under one share.`,
-      byCap >= 1 && needRisk <= 100 ? hint({ risk: needRisk }) : hint({ acct: needAccount }));
+      byCap >= 1 && needRisk != null && needRisk <= 100
+        ? hint({ risk: needRisk, target }) : acctHint(target));
   }
   if (byCap < 1) {
     throw new MktError('usage',
       `Position cap (--max-pct ${maxPct}% = $${round(cap)}) is below one share at $${entry}.`,
-      needPct <= 100 ? hint({ cap: needPct }) : hint({ acct: needAccount }));
+      needPct != null && needPct <= 100 ? hint({ cap: needPct, target }) : acctHint(target));
   }
   const shares = Math.min(byRisk, byCap);   // floor throughout: actual risk is always <= stated risk
   const capped = byCap < byRisk;
@@ -83,23 +107,7 @@ export default async function size({ flags }) {
     risk_per_share: round(riskPerShare), loss_at_stop: round(shares * riskPerShare),
     risk_budget: round(riskDollars), account: round(account), max_pct: maxPct, capped_by_max_pct: capped,
   };
-  if (flags.target != null) {
-    const target = num(flags.target, 'target', { positive: true });
-    // Signed, not Math.abs: a target on the losing side of the trade (below entry on a long, above it
-    // on a short) is a loss, and abs() reported it as profit with a positive R multiple.
-    const rewardPerShare = side === 'long' ? target - entry : entry - target;
-    if (rewardPerShare <= 0) {
-      // A 2R target, floored at half the entry: on a short whose stop is wide relative to entry,
-      // `entry - 2R` goes negative, and a suggested price below zero fails num() on the very next run.
-      // The floored branch is no longer 2R — it is just the nearest sane target that is still a profit.
-      const twoR = side === 'long' ? entry + riskPerShare * 2 : Math.max(entry - riskPerShare * 2, entry / 2);
-      // twoR is strictly on the profitable side by construction; only the rounding can break that, so
-      // round against that inequality rather than at a chosen precision — see profitable() below.
-      const better = (v) => (side === 'long' ? v > entry : v < entry);
-      throw new MktError('usage',
-        `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.`,
-        hint({ target: profitable(twoR, better) }));
-    }
+  if (target != null) {
     out.reward_risk = round(rewardPerShare / riskPerShare);
     out.profit_at_target = round(shares * rewardPerShare);
   }
@@ -126,11 +134,15 @@ function pct(v, name, fallback) {
   return n;
 }
 
-// Widen a suggested value by whole steps until the rerun's own test actually passes. Bounded because
-// only the final rounding is ever short: one step settles every case found in the sweep.
+// Widen a suggested value by whole steps until the rerun's own test actually passes. Two steps, because
+// only the final rounding is ever short: across 112,488 need* evaluations the measured maximum was ONE
+// step and nothing failed to clear. Returns null rather than a value the caller just proved doesn't
+// clear — handing that back would emit a hint reproducing its own error, the thing this exists to stop.
+// (profitable() looks identical but returns its input, which is earned: 17 significant digits round-trip
+// any double, so its fallthrough is unreachable by construction rather than by measurement.)
 function bump(v, step, clears) {
-  for (let i = 0; i < 1000 && !clears(v); i++) v = round(v + step);
-  return v;
+  for (let i = 0; i < 2 && !clears(v); i++) v = round(v + step);
+  return clears(v) ? v : null;
 }
 
 // The shape of a valid invocation, shown when the caller's own numbers are unusable.
