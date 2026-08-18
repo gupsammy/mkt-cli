@@ -158,8 +158,15 @@ export default async function backup({ flags }) {
   let pruned = 0;
   // Tolerate a dump a concurrent run already removed — that must not fail a backup whose real work is
   // done and published — but count only what this run actually deleted, so old_dumps_pruned stays true.
+  //    Anything else (EACCES, an iCloud placeholder that won't unlink) is typed on the way out: the
+  //    dump and the mirror are already published by this point, so failing untyped would report a
+  //    successful backup as a generic crash.
   for (const f of dumps.slice(0, Math.max(0, dumps.length - KEEP_DB_DUMPS))) {
-    try { fs.rmSync(path.join(dbDir, f)); pruned++; } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    try { fs.rmSync(path.join(dbDir, f)); pruned++; } catch (e) {
+      if (e.code === 'ENOENT') continue;
+      throw new MktError('generic', `Could not prune old dump ${f}: ${e.message}`,
+        'check permissions on the backup directory');
+    }
   }
 
   printObject({
@@ -219,13 +226,12 @@ async function publish(from, to) {
   return true;
 }
 
-// Drop staging files a killed run left behind — nothing else sweeps them, and an unlabelled partial
-// sitting in the archive syncs to iCloud forever. Day-old only, so a concurrent run's temp survives.
-// A staged dump is three files once it has been opened: the dump plus the WAL sidecars that opening it
-// creates. Every abandon path has to drop all three, or the sweep 24h later becomes the only collector.
+// A staged dump is never just one file: db.backup() writes through a `-journal` (a fresh destination
+// takes journal_mode=delete), and opening the result for quick_check adds `-shm`/`-wal`. Observed all
+// three alongside the `.tmp` while polling a live backup. Every abandon path drops all of them, so the
+// 24h sweep stays a backstop rather than the only collector.
 function rmSidecars(p) {
-  fs.rmSync(`${p}-shm`, { force: true });
-  fs.rmSync(`${p}-wal`, { force: true });
+  for (const ext of ['-journal', '-shm', '-wal']) fs.rmSync(`${p}${ext}`, { force: true });
 }
 
 function rmStaged(p) {
@@ -233,12 +239,15 @@ function rmStaged(p) {
   rmSidecars(p);
 }
 
+// Drop staging files a killed run left behind — nothing else sweeps them, and an unlabelled partial
+// sitting in the archive syncs to iCloud forever. Day-old only, so a concurrent run's temp survives.
 function sweepStale(dir) {
   if (!fs.existsSync(dir)) return;
   const cutoff = Date.now() - 86_400_000;
-  // Sidecars are matched too: a run killed between the quick_check open and the rename leaves
-  // `<name>.tmp-shm`/`-wal` behind, which the bare `.tmp` suffix would not catch.
-  for (const f of fs.readdirSync(dir).filter((f) => /\.tmp(-shm|-wal)?$/.test(f))) {
+  // Sidecars are matched too: a killed run leaves `<name>.tmp-journal` (during the copy) or
+  // `<name>.tmp-shm`/`-wal` (after the verification open), none of which the bare `.tmp` suffix
+  // catches. The `.tmp` infix is required, so a real dump or a `.ndjson.gz` can never match.
+  for (const f of fs.readdirSync(dir).filter((f) => /\.tmp(-journal|-shm|-wal)?$/.test(f))) {
     const p = path.join(dir, f);
     // statSync can lose a race with a concurrent run renaming its staged file into place; a vanished
     // file is already the outcome we wanted, so skip it rather than crash a backup that succeeded.
