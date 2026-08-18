@@ -138,7 +138,9 @@ rather than importing `size()` for exactly that reason. Two tiers:
 The suite clears the whole `MKT_*` namespace before spawning — `size` falls back to `$MKT_ACCOUNT`, and
 the vars other commands read have *side effects*: an `alert` test would send real Telegram/ntfy pushes,
 a `backup` test would write to someone's iCloud. `$HOME` is still owed by whoever adds the first
-DB-touching case (it needs a temp dir, else the test opens the developer's real `~/.mkt/mkt.db`). Extend it whenever a command grows a hint; note the argv splitter is
+DB-touching case (it needs a temp dir, else the test opens the developer's real `~/.mkt/mkt.db`).
+
+Extend the suite whenever a command grows a hint. Note the argv splitter is
 whitespace-only, and hints elsewhere carry quoted expressions (`--where 'RSI < 30'`) that need a
 quote-aware tokenizer first.
 

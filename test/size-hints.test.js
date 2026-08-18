@@ -77,6 +77,13 @@ const FAILING = [
   // rerun — the account twin of the case above, except one of the two copies isn't a constant.
   ['explicit account that matches the literal, with the env set',
     ['--entry', '5000', '--stop', '4999', '--account', '6000'], { MKT_ACCOUNT: '3000' }],
+  // The two need* paths where ceil() lands a hair under the limit it was computed to clear. Found by
+  // sweeping 37,496 hint-emitting inputs against the binary, not by inspection — the arithmetic is
+  // exact on paper and only the second rounding, inside the rerun, is short.
+  ['account hint whose rounding lands a hair short',
+    ['--entry', '1234.56', '--stop', '7000', '--account', '6000', '--risk', '1', '--max-pct', '1']],
+  ['risk hint whose rounding lands a hair short',
+    ['--entry', '0.0001', '--stop', '1', '--account', '1', '--risk', '0.01', '--max-pct', '25']],
 ];
 
 for (const [name, args, env] of FAILING) {
@@ -161,6 +168,13 @@ test('a target on the profitable side reports R and profit', () => {
   const out = JSON.parse(run(['--entry', '50', '--stop', '47', '--target', '56', '--compact']).stdout);
   assert.equal(out.reward_risk, 2);
   assert.equal(out.profit_at_target, 120);
+});
+
+test('an empty MKT_ACCOUNT falls back to the default rather than failing', () => {
+  // `??` treated MKT_ACCOUNT= as set, so blanking the var — a wrapper passing an unset value through,
+  // or an empty launchd EnvironmentVariables entry — removed the 6000 fallback entirely.
+  const out = JSON.parse(run(['--entry', '50', '--stop', '47', '--compact'], { MKT_ACCOUNT: '' }).stdout);
+  assert.equal(out.account, 6000);
 });
 
 test('the position cap binds before the risk budget does', () => {

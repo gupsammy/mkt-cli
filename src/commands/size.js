@@ -14,11 +14,11 @@ export default async function size({ flags }) {
   // fails loudly instead of making every share count NaN, which JSON renders as a confident `null`.
   const account = flags.account != null
     ? num(flags.account, 'account', { positive: true })
-    : num(process.env.MKT_ACCOUNT ?? 6000, 'account (from $MKT_ACCOUNT)', { positive: true });
+    : num(process.env.MKT_ACCOUNT || 6000, 'account (from $MKT_ACCOUNT)', { positive: true });
   // hint() may omit a flag only when the rerun would fall back to the same value. That holds for risk
   // and max-pct, whose defaults are constants — but the account default is `$MKT_ACCOUNT ?? 6000`, so
   // with the env set an omitted --account resolves to something else entirely and the hint fails.
-  const envAccount = process.env.MKT_ACCOUNT != null;
+  const envAccount = !!process.env.MKT_ACCOUNT;   // `||` above, so an empty value is unset, not zero
   const riskPct = pct(flags.risk, 'risk', 1);
   const maxPct = pct(flags['max-pct'], 'max-pct', 25);
 
@@ -50,9 +50,20 @@ export default async function size({ flags }) {
     + (risk !== 1 ? ` --risk ${risk}` : '') + (capFlag !== 25 ? ` --max-pct ${capFlag}` : '')
     + ((account !== 6000 || envAccount) && !acct ? ` --account ${account}` : '') + (acct ? ` --account ${acct}` : '')
     + (target ? ` --target ${target}` : '');
-  const needRisk = ceil2(riskPerShare / account * 100);
-  const needPct = Math.ceil(entry / account * 100);
-  const needAccount = Math.ceil(Math.max(riskPerShare * 100 / riskPct, entry * 100 / maxPct));
+  // ceil() clears these thresholds in exact arithmetic, but the rerun rounds again — so a suggestion can
+  // land a hair under the very limit it was computed to clear, handing back a hint that reproduces the
+  // error. This is what profitable() already does for the target price; these three were the last places
+  // still asserting a rounding rather than checking it. A sweep of 37,496 hint-emitting inputs found 235
+  // that failed, the most ordinary being `--entry 1234.56 --stop 7000 --account 6000 --risk 1 --max-pct 1`,
+  // which suggested `--account 576544` and exited 2 on the rerun. None fail with the loop.
+  const clearsRisk = (r) => Math.floor(account * r / 100 / riskPerShare) >= 1;
+  const clearsCap = (p) => Math.floor(account * p / 100 / entry) >= 1;
+  // The account hint keeps the caller's own percentages, so it has to clear both limits at that rate.
+  const clearsBoth = (a) =>
+    Math.floor(a * riskPct / 100 / riskPerShare) >= 1 && Math.floor(a * maxPct / 100 / entry) >= 1;
+  const needRisk = bump(ceil2(riskPerShare / account * 100), 0.01, clearsRisk);
+  const needPct = bump(Math.ceil(entry / account * 100), 1, clearsCap);
+  const needAccount = bump(Math.ceil(Math.max(riskPerShare * 100 / riskPct, entry * 100 / maxPct)), 1, clearsBoth);
   if (byRisk < 1) {
     throw new MktError('usage',
       `Stop is too wide for the risk budget: $${round(riskDollars)} at $${round(riskPerShare)}/share is under one share.`,
@@ -113,6 +124,13 @@ function pct(v, name, fallback) {
   const n = num(v, name, { positive: true });
   if (n > 100) throw new MktError('usage', `--${name} must be between 0 and 100 (percent of account).`, `${EXAMPLE} --${name} 25`);
   return n;
+}
+
+// Widen a suggested value by whole steps until the rerun's own test actually passes. Bounded because
+// only the final rounding is ever short: one step settles every case found in the sweep.
+function bump(v, step, clears) {
+  for (let i = 0; i < 1000 && !clears(v); i++) v = round(v + step);
+  return v;
 }
 
 // The shape of a valid invocation, shown when the caller's own numbers are unusable.
