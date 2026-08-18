@@ -43,7 +43,7 @@ async function ingestFile(file, db, stmt, region) {
 // mkt ingest [--region R] [--all] [--prune]
 // Loads snapshot .ndjson.gz files into ~/.mkt/mkt.db (idempotent upsert). Incremental by default:
 // only files on/after the region's newest ingested date replay — ">=" not ">" because `record`
-// rewrites today's file in place, so today must be re-absorbed. --all replays every file (full
+// replaces today's file on every run, so today must be re-absorbed. --all replays every file (full
 // rebuild: fresh machine, restored archive, relabeled days).
 // --prune is DEPRECATED and not used by the scheduled job: the gz archive is the source of truth and
 // is kept forever (it is unrecoverable; the DB is a projection this command can always rebuild from

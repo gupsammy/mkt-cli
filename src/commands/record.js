@@ -3,6 +3,8 @@ import path from 'node:path';
 import os from 'node:os';
 import zlib from 'node:zlib';
 import readline from 'node:readline';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { scan, fieldSet } from '../providers/tradingview.js';
 import { MktError } from '../errors.js';
 import { validateColumns } from '../filter.js';
@@ -72,17 +74,36 @@ export default async function record({ flags }) {
   }
 
   // Gzip on the fly (~8× smaller than plain NDJSON). Read back with `gzcat file | jq`.
-  const gzip = zlib.createGzip();
-  const out = fs.createWriteStream(file);
-  gzip.pipe(out);
-  for (const r of rows) {
-    gzip.write(JSON.stringify({ date, ...r }) + '\n');   // r = {symbol, <column>: value}
-  }
-  await new Promise((res, rej) => { out.on('close', res); out.on('error', rej); gzip.end(); });
+  await writeSnapshotGz(file, date, rows);
 
   const bytes = fs.statSync(file).size;
   printObject({ recorded: rows.length, region, date, columns: columns.length, size_mb: Math.round(bytes / 1e5) / 10, file }, flags);
   return 0;
+}
+
+// Stage → fsync → rename, the same shape as backup.js publish(): the live archive is only ever
+// REPLACED by a complete flushed file, never opened for write — createWriteStream(file) truncates
+// the existing good day at open, and any interruption before the replacement bytes land (SIGKILL,
+// launchd timeout, an overlapping run) destroys a snapshot the scanner cannot re-serve. The tmp is
+// pid-scoped so concurrent runs can't rename each other's half-written bytes into place; pipeline()
+// makes a gzip error reject instead of going unobserved and honors the compressor's backpressure;
+// `flush` fsyncs the fd before close so the rename never publishes bytes the OS hasn't persisted —
+// on Node < 20.10 the option is silently ignored (no fsync, no error); package.json pins >= 22,
+// the floor `node --test`'s discovery semantics already require anyway. Exported for testing.
+export async function writeSnapshotGz(file, date, rows) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    await pipeline(
+      Readable.from((function* () { for (const r of rows) yield JSON.stringify({ date, ...r }) + '\n'; })()),
+      zlib.createGzip(),
+      fs.createWriteStream(tmp, { flush: true }),
+    );
+    fs.renameSync(tmp, file);   // atomic replace, only after the bytes are safe
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw new MktError('generic', `Could not write snapshot ${file}: ${e.message}`,
+      'check free space and permissions on the snapshot directory');
+  }
 }
 
 // Fraction of symbols whose close matches the newest recorded day BEFORE `date` (today's own file
