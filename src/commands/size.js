@@ -28,15 +28,23 @@ export default async function size({ flags }) {
   // cap-bound result sent you in a circle: widening --risk changed nothing and the message didn't move.
   const byRisk = Math.floor(riskDollars / riskPerShare);
   const byCap = Math.floor(cap / entry);
+  // Each hint names the smallest percentage that actually buys one share — but only when one exists.
+  // Past 100% no percentage helps: the account is the binding constraint, so suggesting one would hand
+  // back a command that reproduces this exact error. Fall back to the account that clears BOTH limits,
+  // since raising it past one and not the other just moves the failure to the next line.
+  const base = `mkt size --entry ${entry} --stop ${stop}`;
+  const needAccount = Math.ceil(Math.max(riskPerShare * 100 / riskPct, entry * 100 / maxPct));
   if (byRisk < 1) {
+    const needRisk = ceil2(riskPerShare / account * 100);
     throw new MktError('usage',
       `Stop is too wide for the risk budget: $${round(riskDollars)} at $${round(riskPerShare)}/share is under one share.`,
-      `mkt size --entry ${entry} --stop ${stop} --risk ${round(Math.min(100, riskPerShare / account * 100 + riskPct))}`);
+      needRisk <= 100 ? `${base} --risk ${needRisk}` : `${base} --account ${needAccount}`);
   }
   if (byCap < 1) {
+    const needPct = Math.ceil(entry / account * 100);
     throw new MktError('usage',
       `Position cap (--max-pct ${maxPct}% = $${round(cap)}) is below one share at $${entry}.`,
-      `mkt size --entry ${entry} --stop ${stop} --max-pct ${Math.min(100, Math.ceil(entry / account * 100))}`);
+      needPct <= 100 ? `${base} --max-pct ${needPct}` : `${base} --account ${needAccount}`);
   }
   const shares = Math.min(byRisk, byCap);   // floor throughout: actual risk is always <= stated risk
   const capped = byCap < byRisk;
@@ -53,9 +61,12 @@ export default async function size({ flags }) {
     // on a short) is a loss, and abs() reported it as profit with a positive R multiple.
     const rewardPerShare = side === 'long' ? target - entry : entry - target;
     if (rewardPerShare <= 0) {
+      // A 2R target, except on a short whose stop is wide relative to entry — there `entry - 2R` goes
+      // negative, and a suggested price below zero fails num() on the very next run.
+      const twoR = side === 'long' ? entry + riskPerShare * 2 : Math.max(entry - riskPerShare * 2, entry / 2);
       throw new MktError('usage',
         `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.`,
-        `mkt size --entry ${entry} --stop ${stop} --target ${round(side === 'long' ? entry + riskPerShare * 2 : entry - riskPerShare * 2)}`);
+        `mkt size --entry ${entry} --stop ${stop} --target ${round(twoR)}`);
     }
     out.reward_risk = round(rewardPerShare / riskPerShare);
     out.profit_at_target = round(shares * rewardPerShare);
@@ -84,3 +95,5 @@ function pct(v, name, fallback) {
 }
 
 const round = (x) => Math.round(x * 100) / 100;
+// Round UP to 2dp: a suggested percentage has to clear the threshold, not land just under it.
+const ceil2 = (x) => Math.ceil(x * 100) / 100;
