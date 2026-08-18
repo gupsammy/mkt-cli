@@ -109,13 +109,14 @@ for (const [name, args, env] of FAILING) {
     assert.ok(failed.hint, `no hint offered\n${failed.stderr}`);
 
     // The one runtime downgrade to the example tier: no suggested account/risk/cap clears one share
-    // (bump() returning null — never observed across the sweep, measured rather than proven). The
+    // (sizingFix === null — never observed across the sweep, measured rather than proven). The
     // message announces it, so the suite keys on that sentence instead of carrying a copy of the
-    // example string; without this escape, the explicitness loop below would misreport the condition
-    // as "hint omits --risk" — a wrong diagnosis in a suite whose value is that a red is specific.
+    // example string. This is a trip-wire, not an escape: a row that starts taking this branch is a
+    // correctable input demoted to the malformed tier, which is a finding — checked before the
+    // explicitness loop so the red names the downgrade instead of misreporting "hint omits --risk".
     if (/sizes one share here/.test(failed.stderr)) {
       assert.equal(run(hintArgv(failed.hint), env).code, 0, `example hint does not run: ${failed.hint}`);
-      return;
+      assert.fail(`no sizing correction exists for a correctable input: mkt size ${args.join(' ')}`);
     }
 
     const asked = flagsOf(args);
@@ -155,8 +156,17 @@ for (const [name, args, env] of FAILING) {
     const rerun = run([...hintArgv(failed.hint), '--compact'], env);
     assert.equal(rerun.code, 0, `hint does not resolve: ${failed.hint}\n${rerun.stderr}`);
     const sized = JSON.parse(rerun.stdout);
-    assert.equal(sized.account, Number(offered.account), 'rerun resolved a different --account than the hint spelled');
-    assert.equal(sized.max_pct, Number(offered['max-pct']), 'rerun resolved a different --max-pct than the hint spelled');
+    // account is rounded to 2dp in the output; the hint prints the caller's value verbatim, so round
+    // both sides or a fractional --account would false-red on a hint that is entirely correct.
+    assert.equal(sized.account, Math.round(Number(offered.account) * 100) / 100,
+      'rerun resolved a different --account than the hint spelled');
+    assert.equal(sized.max_pct, Number(offered['max-pct']),
+      'rerun resolved a different --max-pct than the hint spelled');
+    // risk — the flag that made "exits 0" insufficient in the first place — is recovered from two
+    // outputs that are each 2dp-rounded, so the slack scales with that rounding (~1/account), not a
+    // fixed epsilon orders of magnitude tighter than the quantity it guards.
+    assert.ok(Math.abs(sized.risk_budget / sized.account * 100 - Number(offered.risk)) <= 1 / sized.account,
+      'rerun resolved a different --risk than the hint spelled');
   });
 }
 
@@ -249,6 +259,14 @@ test('a hint that moves a limit says so, not just what was asked about', () => {
   // that moves — here 6000 → 690000, a 115x raise the generic "corrects both" sentence never named.
   const acct = run(['--entry', '100', '--stop', '7000', '--account', '6000', '--target', '200']);
   assert.match(acct.stderr, /raises --account to \$690000/);
+
+  // ...and the {acct} arm fires most often on the plain sizing paths — the same raise has to be
+  // named there too, not only when a losing target happens to be along for the ride. One row per
+  // throw site: byRisk < 1 falls through on needRisk > 100, byCap < 1 on needPct > 100.
+  const riskPath = run(['--entry', '100', '--stop', '7000', '--account', '6000']);
+  assert.match(riskPath.stderr, /Stop is too wide .* raises --account to \$690000/);
+  const capPath = run(['--entry', '500', '--stop', '499.9', '--account', '100']);
+  assert.match(capPath.stderr, /Position cap .* raises --account to \$2000/);
 
   // ...and a target error with no sizing problem does not claim one.
   const plain = run(['--entry', '50', '--stop', '47', '--target', '40']);

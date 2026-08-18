@@ -80,6 +80,13 @@ export default async function size({ flags }) {
     : byRisk < 1 && byCap >= 1 && needRisk != null && needRisk <= 100 ? { risk: needRisk }
     : byRisk >= 1 && needPct != null && needPct <= 100 ? { cap: needPct }
     : needAccount != null ? { acct: needAccount } : null;
+  // The {acct} arm is the general fallback and it moves --account by orders of magnitude while
+  // leaving the caller's limits untouched — a raise that large is not allowed to ride along unnamed
+  // in a risk-sizing tool. One shared sentence, so every throw that emits the arm explains it and
+  // the wordings cannot drift apart. Empty on every other arm.
+  const raised = sizingFix?.acct
+    ? ` The hint raises --account to $${sizingFix.acct}; no risk or cap under 100% sizes a share at these numbers.`
+    : '';
 
   // Signed, not Math.abs: a target on the losing side of the trade (below entry on a long, above it
   // on a short) is a loss, and abs() reported it as profit with a positive R multiple.
@@ -93,13 +100,12 @@ export default async function size({ flags }) {
     // round against that inequality rather than at a chosen precision — see profitable() below.
     const better = (v) => (side === 'long' ? v > entry : v < entry);
     // The hint may also raise a limit here, and --max-pct is the flag whose whole job is to cap
-    // exposure. Both sizing branches explain themselves when they move it; this one has to as well,
-    // or the user pastes back a command that quietly quadruples their position size. The account arm
-    // is worded separately: there "these limits" come back untouched and it is --account that moves —
-    // often by orders of magnitude — so the message names the flag and the value.
+    // exposure. Every branch that moves a limit says so in its message; this one has to as well,
+    // or the user pastes back a command that quietly quadruples their position size. The account
+    // arm reuses the shared `raised` sentence.
     const also = !sizingFix ? NO_FIX
       : !Object.keys(sizingFix).length ? ''
-      : sizingFix.acct ? ` The position does not size at all at these limits — the hint also raises --account to $${sizingFix.acct}.`
+      : sizingFix.acct ? raised
       : ' The position does not size at these limits either, so the hint corrects both.';
     throw new MktError('usage',
       `Target ${target} is on the losing side of a ${side} from ${entry} — that is a loss, not a target.${also}`,
@@ -107,12 +113,12 @@ export default async function size({ flags }) {
   }
   if (byRisk < 1) {
     throw new MktError('usage',
-      `Stop is too wide for the risk budget: $${round(riskDollars)} at $${round(riskPerShare)}/share is under one share.${sizingFix ? '' : NO_FIX}`,
+      `Stop is too wide for the risk budget: $${round(riskDollars)} at $${round(riskPerShare)}/share is under one share.${sizingFix ? raised : NO_FIX}`,
       sizingFix ? hint(sizingFix) : EXAMPLE);
   }
   if (byCap < 1) {
     throw new MktError('usage',
-      `Position cap (--max-pct ${maxPct}% = $${round(cap)}) is below one share at $${entry}.${sizingFix ? '' : NO_FIX}`,
+      `Position cap (--max-pct ${maxPct}% = $${round(cap)}) is below one share at $${entry}.${sizingFix ? raised : NO_FIX}`,
       sizingFix ? hint(sizingFix) : EXAMPLE);
   }
   const shares = Math.min(byRisk, byCap);   // floor throughout: actual risk is always <= stated risk
