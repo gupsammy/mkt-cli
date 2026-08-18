@@ -22,8 +22,14 @@ const BIN = fileURLToPath(new URL('../bin/mkt.js', import.meta.url));
 // mkt env vars in launchd plists, which makes a developer with it exported the normal case, not an
 // exotic one — and a suite that is green in CI and red on one machine is the confusion a pinning
 // suite exists to prevent.
+//
+// The whole MKT_ namespace, not just that one var: the vars the OTHER commands read have side effects
+// rather than defaults. MKT_TG_TOKEN / MKT_NTFY_TOPIC would make an `alert` test send real pushes, and
+// MKT_BACKUP_DIR would make a `backup` test write into someone's iCloud mirror. $HOME is the remaining
+// one — anything touching sql/ingest/alert/watchlist opens the developer's real ~/.mkt/mkt.db — and it
+// needs a temp dir per test, so it is owed by whoever adds the first DB-touching case.
 const ENV = { ...process.env };
-delete ENV.MKT_ACCOUNT;
+for (const k of Object.keys(ENV)) if (k.startsWith('MKT_')) delete ENV[k];
 
 function run(args) {
   const r = spawnSync(process.execPath, [BIN, 'size', ...args], { encoding: 'utf8', env: ENV });
@@ -40,8 +46,12 @@ const flagsOf = (argv) => Object.fromEntries(
 );
 const hintArgv = (hint) => hint.split(/\s+/).slice(2);   // drop the leading `mkt size`
 
-// What the rerun falls back to for any flag the hint chose to omit.
-const DEFAULTS = { account: 6000, risk: 1, 'max-pct': 25 };
+// What the rerun falls back to for an omitted --max-pct. This is a THIRD copy of a constant that
+// size.js already holds twice — the real default at `pct(flags['max-pct'], 'max-pct', 25)` and hint()'s
+// omission literal `capFlag !== 25` — and those two silently diverging is itself the PR #8 bug shape.
+// account and risk are not declared here for that reason: they are read back out of the rerun's own
+// output below. max-pct is not recoverable from the output (only whether it bound), so it stays.
+const MAX_PCT_DEFAULT = 25;
 
 // Correctable inputs: the numbers are well-formed, the combination just doesn't size. The hint is a
 // CORRECTION, so it has to carry the caller's own inputs forward.
@@ -58,6 +68,9 @@ const FAILING = [
   ['both limits below one share', ['--entry', '9000', '--stop', '100', '--account', '6000']],
   ['account too small for one share', ['--entry', '500', '--stop', '490', '--account', '100']],
   ['wide stop with a non-default risk to preserve', ['--entry', '100', '--stop', '7000', '--account', '6000', '--risk', '100', '--max-pct', '25']],
+  // --risk 1 is the default spelled out, so hint() omits it. That makes this the case that notices if
+  // size.js's real default and hint()'s omission literal ever stop agreeing.
+  ['cap-bound with risk spelled out at its default', ['--entry', '5000', '--stop', '4999', '--account', '6000', '--risk', '1']],
 ];
 
 for (const [name, args] of FAILING) {
@@ -75,20 +88,29 @@ for (const [name, args] of FAILING) {
 
     // "Exits 0" alone is too weak on the target path: dropping --risk from a target hint still sizes
     // successfully, just at 1% instead of the 100% the caller asked for — silently wrong, and green.
-    // So pin the direction of every caller flag the hint isn't deliberately raising.
+    // So run the hint and read back what it ACTUALLY sized at, rather than recomputing what it should
+    // have. Asserting against a local copy of size.js's defaults cannot see those defaults change.
+    const rerun = run([...hintArgv(failed.hint), '--compact']);
+    assert.equal(rerun.code, 0, `hint does not resolve: ${failed.hint}\n${rerun.stderr}`);
+    const sized = JSON.parse(rerun.stdout);
+    const effective = { account: sized.account, risk: sized.risk_budget / sized.account * 100 };
+
     for (const [flag, value] of Object.entries(asked)) {
       if (flag === 'target') {
         assert.ok('target' in offered, 'hint dropped --target instead of moving it to a profitable price');
       } else if (flag === 'entry' || flag === 'stop') {
-        assert.equal(offered[flag], value, `hint changed --${flag}, which is the caller's actual trade`);
+        // Numeric, not string: hint() re-renders via String(Number(x)), so `--entry 1e2` comes back as
+        // `100` and a string compare would report a hint bug that is really just canonical formatting.
+        assert.equal(Number(offered[flag]), Number(value),
+          `hint changed --${flag}, which is the caller's actual trade`);
       } else {
-        const onRerun = flag in offered ? Number(offered[flag]) : DEFAULTS[flag];
-        assert.ok(onRerun >= Number(value),
-          `hint silently lowers --${flag}: asked ${value}, rerun would use ${onRerun}`);
+        const onRerun = flag === 'max-pct'
+          ? ('max-pct' in offered ? Number(offered['max-pct']) : MAX_PCT_DEFAULT)
+          : effective[flag];
+        assert.ok(onRerun >= Number(value) - 1e-9,
+          `hint silently lowers --${flag}: asked ${value}, rerun actually used ${onRerun}`);
       }
     }
-
-    assert.equal(run(hintArgv(failed.hint)).code, 0, `hint does not resolve: ${failed.hint}`);
   });
 }
 

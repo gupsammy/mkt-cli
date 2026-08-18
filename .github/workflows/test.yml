@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: '22'   # pinned: bare `node --test` discovery semantics differ by major
           cache: npm
       # The suite spawns the real CLI, and bin/mkt.js imports every command eagerly — including the
       # ones that pull in better-sqlite3 — so the native module has to be installed even though the

@@ -21,8 +21,12 @@ export default async function size({ flags }) {
   const riskPerShare = Math.abs(entry - stop);
   // Every other failure in this command hands back a runnable command; this one used to hand back null,
   // which made "a size error always offers a way forward" an invariant with one silent exception.
+  // The hint stays an EXAMPLE rather than a correction carrying the caller's account and risk: any stop
+  // it suggested would be a trading decision (stop distance is the whole input this command sizes from),
+  // and on a small account a suggested stop can fail the position cap instead — relocating the error,
+  // which is the bug class PR #8 spent five rounds killing. Their number goes in the message instead.
   if (riskPerShare === 0) {
-    throw new MktError('usage', 'entry and stop cannot be equal (zero risk/share).', 'mkt size --entry 50 --stop 47');
+    throw new MktError('usage', `entry and stop are both ${entry} — a stop must differ from entry, or there is no risk to size.`, EXAMPLE);
   }
   const side = stop < entry ? 'long' : 'short';
 
@@ -90,7 +94,7 @@ export default async function size({ flags }) {
 
 // Number(''), Number(' ') and Number(null) are all 0, and 1e400 is Infinity — none of which are a price.
 function num(v, name, { positive = false } = {}) {
-  const bad = (msg) => new MktError('usage', `--${name} ${msg}`, 'mkt size --entry 50 --stop 47');
+  const bad = (msg) => new MktError('usage', `--${name} ${msg}`, EXAMPLE);
   if (v == null || v === true || (typeof v === 'string' && v.trim() === '')) throw bad('must be a number.');
   const n = Number(v);
   if (!Number.isFinite(n)) throw bad('must be a finite number.');
@@ -103,9 +107,12 @@ function num(v, name, { positive = false } = {}) {
 function pct(v, name, fallback) {
   if (v == null) return fallback;
   const n = num(v, name, { positive: true });
-  if (n > 100) throw new MktError('usage', `--${name} must be between 0 and 100 (percent of account).`, `mkt size --entry 50 --stop 47 --${name} 25`);
+  if (n > 100) throw new MktError('usage', `--${name} must be between 0 and 100 (percent of account).`, `${EXAMPLE} --${name} 25`);
   return n;
 }
+
+// The shape of a valid invocation, shown when the caller's own numbers are unusable.
+const EXAMPLE = 'mkt size --entry 50 --stop 47';
 
 const round = (x) => Math.round(x * 100) / 100;
 // Round UP to 2dp: a suggested percentage has to clear the threshold, not land just under it.

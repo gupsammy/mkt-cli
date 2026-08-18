@@ -124,8 +124,9 @@ The SQLite query layer (Phase 2) is **built** — see "The recorder + DB" above.
 (`.github/workflows/test.yml`); it needs `npm ci` because `bin/mkt.js` imports every command eagerly,
 better-sqlite3 included.
 
-`test/size-hints.test.js` asserts the **hint contract**: every error hint is a command line the user
-pastes back, so it must run. Four distinct bugs hid in that gap (PR #8, five review rounds) — none
+`test/size-hints.test.js` asserts the **hint contract**: a *command-level* error hint is a command line
+the user pastes back, so it must run. (Parser errors in `bin/mkt.js` are the deliberate exception — a
+malformed argv has no command worth suggesting, so their hint is a flag *reference*, not a command.) Four distinct bugs hid in that gap (PR #8, five review rounds) — none
 visible by reading the code, all trivial to catch by executing the hint. The suite spawns the real CLI
 rather than importing `size()` for exactly that reason. Two tiers:
 - **correctable input** (well-formed numbers that just don't size) → the hint is a *correction*, so it
@@ -134,8 +135,10 @@ rather than importing `size()` for exactly that reason. Two tiers:
   fixed order) and every caller flag must survive or be raised, never lowered.
 - **malformed input** → the hint is an *example* of the right shape; it only has to differ and run.
 
-The suite clears `$MKT_ACCOUNT` before spawning — `size` falls back to it, so an exported value would
-rewrite every expectation. Extend it whenever a command grows a hint; note the argv splitter is
+The suite clears the whole `MKT_*` namespace before spawning — `size` falls back to `$MKT_ACCOUNT`, and
+the vars other commands read have *side effects*: an `alert` test would send real Telegram/ntfy pushes,
+a `backup` test would write to someone's iCloud. `$HOME` is still owed by whoever adds the first
+DB-touching case (it needs a temp dir, else the test opens the developer's real `~/.mkt/mkt.db`). Extend it whenever a command grows a hint; note the argv splitter is
 whitespace-only, and hints elsewhere carry quoted expressions (`--where 'RSI < 30'`) that need a
 quote-aware tokenizer first.
 
