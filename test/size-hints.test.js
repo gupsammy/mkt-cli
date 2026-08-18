@@ -108,12 +108,12 @@ for (const [name, args, env] of FAILING) {
     assert.equal(failed.code, 2, `expected a usage failure\n${failed.stderr}`);
     assert.ok(failed.hint, `no hint offered\n${failed.stderr}`);
 
-    // The one runtime downgrade to the example tier: no suggested account/risk/cap clears one share
-    // (sizingFix === null — never observed across the sweep, measured rather than proven). The
-    // message announces it, so the suite keys on that sentence instead of carrying a copy of the
-    // example string. This is a trip-wire, not an escape: a row that starts taking this branch is a
-    // correctable input demoted to the malformed tier, which is a finding — checked before the
-    // explicitness loop so the red names the downgrade instead of misreporting "hint omits --risk".
+    // The runtime downgrade to the example tier: no suggested account/risk/cap clears one share
+    // (sizingFix === null). Reachable — a denormal --risk overflows every candidate account to
+    // Infinity — but inputs like that, where no correction CAN exist, belong in INVALID below. A row
+    // listed HERE is one we claim is correctable, so taking this branch is a finding, not a pass:
+    // the example hint is verified runnable, then the row fails naming the downgrade — checked before
+    // the explicitness loop so the red says what happened instead of misreporting "hint omits --risk".
     if (/sizes one share here/.test(failed.stderr)) {
       assert.equal(run(hintArgv(failed.hint), env).code, 0, `example hint does not run: ${failed.hint}`);
       assert.fail(`no sizing correction exists for a correctable input: mkt size ${args.join(' ')}`);
@@ -186,6 +186,12 @@ const INVALID = [
   ['entry equals stop AND the target is garbage', ['--entry', '50', '--stop', '50', '--target', 'abc']],
   ['zero risk under an account the example would not clear',
     ['--entry', '412.5', '--stop', '412.5', '--account', '6000'], { MKT_ACCOUNT: '100' }],
+  // Well-formed numbers, but no correction CAN exist: a denormal --risk overflows every candidate
+  // account to Infinity, which bump() rejects rather than letting `--account Infinity` fail num()
+  // on the rerun. The one input shape that crosses from correctable to example tier BY DESIGN —
+  // FAILING's trip-wire is for rows that cross unexpectedly.
+  ['denormal risk that no finite account can satisfy',
+    ['--entry', '5000', '--stop', '4999', '--account', '6000', '--risk', '5e-324']],
 ];
 
 for (const [name, args, env] of INVALID) {
@@ -267,6 +273,16 @@ test('a hint that moves a limit says so, not just what was asked about', () => {
   assert.match(riskPath.stderr, /Stop is too wide .* raises --account to \$690000/);
   const capPath = run(['--entry', '500', '--stop', '499.9', '--account', '100']);
   assert.match(capPath.stderr, /Position cap .* raises --account to \$2000/);
+
+  // "Single" is load-bearing on the both-limits-fail route: here needRisk (1.67) and needPct (34)
+  // are BOTH under 100, so raising the caller's own two flags together would size a share — the
+  // sentence may say the account is the one-flag fix, not that no percentage correction exists.
+  const bothFail = run(['--entry', '100', '--stop', '95', '--account', '300']);
+  assert.match(bothFail.stderr, /raises --account to \$500; no single limit under 100%/);
+
+  // ...and the denormal-risk input, where no finite correction exists at all, says that instead.
+  const noFix = run(['--entry', '5000', '--stop', '4999', '--account', '6000', '--risk', '5e-324']);
+  assert.match(noFix.stderr, /sizes one share here; the hint is an example/);
 
   // ...and a target error with no sizing problem does not claim one.
   const plain = run(['--entry', '50', '--stop', '47', '--target', '40']);

@@ -84,8 +84,12 @@ export default async function size({ flags }) {
   // leaving the caller's limits untouched — a raise that large is not allowed to ride along unnamed
   // in a risk-sizing tool. One shared sentence, so every throw that emits the arm explains it and
   // the wordings cannot drift apart. Empty on every other arm.
+  // "Single" is load-bearing: on the both-limits-fail route both need* can land under 100, so a
+  // correction inside the caller's own flags exists (raise risk AND cap together) — the account is
+  // just the one-flag fix. Claiming no percentage works would push a trader toward the account as
+  // the only lever when the flags they already have would do.
   const raised = sizingFix?.acct
-    ? ` The hint raises --account to $${sizingFix.acct}; no risk or cap under 100% sizes a share at these numbers.`
+    ? ` The hint raises --account to $${sizingFix.acct}; no single limit under 100% sizes a share at these numbers.`
     : '';
 
   // Signed, not Math.abs: a target on the losing side of the trade (below entry on a long, above it
@@ -164,15 +168,21 @@ function pct(v, name, fallback) {
 // (profitable() looks identical but returns its input, which is earned: 17 significant digits round-trip
 // any double, so its fallthrough is unreachable by construction rather than by measurement.)
 function bump(v, step, clears) {
+  // A denormal --risk (5e-324 parses as a positive finite number) overflows the account suggestion
+  // to Infinity, and clears(Infinity) is trivially true — so without this gate the hint says
+  // `--account Infinity` and the rerun fails num(). Non-finite means no suggestion exists, not a
+  // suggestion that needs widening.
+  if (!Number.isFinite(v)) return null;
   for (let i = 0; i < 2 && !clears(v); i++) v = round(v + step);
   return clears(v) ? v : null;
 }
 
-// sizingFix === null is the one place a CORRECTABLE input falls back to the example tier at runtime:
-// no suggested account, risk or cap clears one share. bump() has never returned null across the
-// 112,488-evaluation sweep, but that is measured, not proven — so when it happens the message says
-// what changed tiers instead of silently handing over a different trade. The suite keys its
-// example-tier handling on this sentence rather than carrying a copy of EXAMPLE's text.
+// sizingFix === null is the one place a well-formed input falls back to the example tier at runtime:
+// no suggested account, risk or cap clears one share. It IS reachable — a denormal --risk overflows
+// every candidate account to Infinity, so no finite correction exists (that input is pinned in the
+// suite's INVALID tier). When it happens the message says what changed tiers instead of silently
+// handing over a different trade; the suite keys its example-tier handling on this sentence rather
+// than carrying a copy of EXAMPLE's text.
 const NO_FIX = ' No account, risk or cap this command can suggest sizes one share here; the hint is an example, not a correction.';
 
 // The shape of a valid invocation, shown when the caller's own numbers are unusable. Not fully

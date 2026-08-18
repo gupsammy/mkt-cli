@@ -137,6 +137,10 @@ rather than importing `size()` for exactly that reason. Three tiers:
   or raised, never lowered; exit-0-on-rerun alone is NOT sufficient (dropping `--risk 100` still exits
   0, silently sizing at 1%).
 - **malformed input** → the hint is an *example* of the right shape; it only has to differ and run.
+  A well-formed input can also cross into this tier *at runtime* when no suggested account/risk/cap
+  sizes a share (`NO_FIX` in `size.js` — e.g. a denormal `--risk` overflows every candidate account to
+  Infinity). Inputs where no correction can exist are listed in the INVALID tier; a FAILING row that
+  crosses is a trip-wire failure naming the downgrade, never a silent pass at the weaker contract.
 - **the grid** — a fixed sweep asserting only that a hint runs. Weaker than the first tier by design,
   but it covers inputs nobody wrote down: the two `ceil()` rounding bugs came out of a 37,496-input
   sweep at a 0.6% hit rate, which no hand-picked list converges on. The full sweep is ~30 minutes of
