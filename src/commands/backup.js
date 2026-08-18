@@ -156,16 +156,17 @@ export default async function backup({ flags }) {
   //    A failed dump throws before the rename above, so anything named mkt-<date>.db is complete.
   const dumps = fs.readdirSync(dbDir).filter((f) => /^mkt-\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort();
   let pruned = 0;
-  // Tolerate a dump a concurrent run already removed — that must not fail a backup whose real work is
-  // done and published — but count only what this run actually deleted, so old_dumps_pruned stays true.
-  //    Anything else (EACCES, an iCloud placeholder that won't unlink) is typed on the way out: the
-  //    dump and the mirror are already published by this point, so failing untyped would report a
-  //    successful backup as a generic crash.
+  //    Tolerate a dump a concurrent run already removed — that must not fail a backup whose real work
+  //    is done — but count only what this run actually deleted, so old_dumps_pruned stays true.
+  //    Anything else (EACCES, an iCloud placeholder that won't unlink) is held rather than thrown: the
+  //    dump and the mirror are already published, so the report has to reach stdout before this fails.
+  let pruneErr = null;
   for (const f of dumps.slice(0, Math.max(0, dumps.length - KEEP_DB_DUMPS))) {
     try { fs.rmSync(path.join(dbDir, f)); pruned++; } catch (e) {
       if (e.code === 'ENOENT') continue;
-      throw new MktError('generic', `Could not prune old dump ${f}: ${e.message}`,
+      pruneErr = new MktError('generic', `Could not prune old dump ${f}: ${e.message}`,
         'check permissions on the backup directory');
+      break;
     }
   }
 
@@ -188,6 +189,9 @@ export default async function backup({ flags }) {
     throw new MktError('conflict', `Corrupt snapshot source with no backup copy: ${lost.join(', ')}.`,
       `gzcat ${path.join(src, lost[0])} | tail -1`);
   }
+  // Same rule, lower severity: retention failed, but everything this run had to protect is published.
+  // Raised after `lost` so the unrecoverable state always wins the exit code.
+  if (pruneErr) throw pruneErr;
   return 0;
 }
 
