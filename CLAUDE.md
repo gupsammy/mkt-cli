@@ -108,7 +108,15 @@ only tv's MCP registration + skill wrapper, not the CLI.
   2 sessions on disk as of 2026-08-18). Revisit once there's a meaningful depth of snapshots.
 - Custom-condition alerts → **BUILT** (`mkt alert`, spec §12). Edge-triggered: saved query → run on
   schedule → diff vs active `alert_hits` stints (append-only: departures close a stint, never
-  delete it — the entry/exit history feeds forward-eval) → push only NEW entrants. Two kinds:
+  delete it — the entry/exit history feeds forward-eval) → push only NEW entrants. An entrant's hit
+  is committed **only if ≥1 sink actually delivered** (issue #16): on total delivery failure the
+  entrant is withheld so it re-fires next check — the `check` summary row carries `notified` (a sink
+  took it) and, when withheld, `delivery: 'failed'` + exit 1. Skipped-vs-failed keys on *configured
+  vs not*, not the errno: the banner is a real sink only ON a Mac, so off-Mac an absent `osascript`
+  (ENOENT) is *skipped*, but on a Mac a missing `osascript` (broken launchd PATH) is a *failure*;
+  likewise a configured Telegram/ntfy whose `curl` is missing is a *failure* (a configured sink that
+  can't deliver — else #16 re-opens silently). Departures always close regardless of send outcome.
+  Two kinds:
   `live` (a `screen --where` filter, run against the live scanner every 15m during market hours) and
   `panel` (a SQL query over `mkt.db`, run once/day after ingest). Definitions + state live in
   `mkt.db` (`alerts`, `alert_hits`); both kinds fan out to all three sinks (below).
@@ -140,15 +148,18 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Five suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
+Six suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
 (corrupt-file continuation, retry visibility, partial-success output, offsets, notification
 ownership, and prune safety), `record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
 cases spawn a real child process), `backup-sweep` (backup collects day-old staged tmps from the
-source archive and touches nothing else; end-to-end through the real CLI: ingest → backup), and
+source archive and touches nothing else; end-to-end through the real CLI: ingest → backup),
 `output-fmt` (the human table formatter never renders a non-zero number as `0` — sub-$0.0001 tickers
 kept non-zero via significant figures — while integers, null, arrays, strings, ordinary decimals, and
-the `--json`/`--compact` paths stay byte-identical; drives the public `printRows`/`printObject`).
+the `--json`/`--compact` paths stay byte-identical; drives the public `printRows`/`printObject`), and
+`alert-notify` (issue #16: an alert hit commits only when a sink actually delivered — total send
+failure withholds the entrant so it re-fires, departures still close, dry-run writes nothing; it
+shadows `curl`/`osascript` on PATH to make the sinks deterministic and drives panel alerts offline).
 
 `test/size-hints.test.js` asserts the **hint contract** — a command-level error hint must be a
 command line that actually runs, so the suite spawns the real CLI rather than importing `size()`.
