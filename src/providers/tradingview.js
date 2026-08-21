@@ -116,6 +116,78 @@ export async function search({ text, type = '', region = '' }) {
 const frame = (m, p) => { const s = JSON.stringify({ m, p }); return `~m~${s.length}~m~${s}`; };
 const rid = (pre) => pre + Math.random().toString(36).slice(2, 10);
 
+// ---- batched-envelope parser (issue #12) -------------------------------------
+// ONE WebSocket message is NOT one envelope: TV batches several `~m~<len>~m~<payload>`
+// envelopes into a single message (an 11,505-bar reply arrived as one 1.27 MB message).
+// These three helpers are the pure, WS-free seam so the batching is unit-testable.
+
+/**
+ * Split one raw WS message into its batched envelope payloads.
+ * Splits on the `~m~<len>~m~` delimiter rather than trusting the byte length —
+ * payloads carry UTF-8 (foreign exchange/company names) where a JS-char slice
+ * would misalign. The leading empty split element is dropped.
+ */
+export function splitEnvelopes(raw) {
+  return raw.split(/~m~\d+~m~/).filter((p) => p.length > 0);
+}
+
+/**
+ * Classify a single envelope payload by DISPATCHING ON the parsed `m` type —
+ * never a raw-substring match, which false-positives when a field value happens
+ * to contain "series_error". Parsing is guarded so one bad envelope is reported
+ * `unparseable` (siblings survive) instead of throwing out of the loop.
+ */
+export function classifyEnvelope(payload) {
+  if (payload.startsWith('~h~')) return { kind: 'heartbeat', echo: payload };
+  let obj;
+  try { obj = JSON.parse(payload); } catch { return { kind: 'unparseable' }; }
+  switch (obj?.m) {
+    case 'timescale_update': {
+      const series = obj?.p?.[1]?.sds_1?.s;
+      return { kind: 'timescale_update', bars: Array.isArray(series) ? series : [] };
+    }
+    case 'series_completed': return { kind: 'series_completed' };
+    case 'series_error':
+    case 'symbol_error': return { kind: 'error' };
+    default: return { kind: 'other', m: obj?.m };
+  }
+}
+
+/**
+ * Stateful reader that accumulates bars across the (possibly many) timescale_update
+ * frames of a series load, keyed by bar time so repeats dedup (last write wins).
+ * `push(raw)` processes one whole message and returns what happened in it:
+ * `{ heartbeats, completed, error }`. Callers resolve ONLY when `completed` — never
+ * on the first non-empty frame (a lone `du` live-tick must not satisfy the request).
+ */
+export function createHistoryReader() {
+  const byTime = new Map();
+  return {
+    push(raw) {
+      const ev = { heartbeats: [], completed: false, error: false };
+      for (const payload of splitEnvelopes(raw)) {
+        const c = classifyEnvelope(payload);   // per-envelope guard lives inside classify
+        switch (c.kind) {
+          case 'heartbeat': ev.heartbeats.push(c.echo); break;
+          case 'timescale_update':
+            for (const b of c.bars) if (b && Array.isArray(b.v)) byTime.set(b.v[0], b.v);
+            break;
+          case 'series_completed': ev.completed = true; break;
+          case 'error': ev.error = true; break;
+          default: break;   // other / unparseable → ignore, keep listening
+        }
+      }
+      return ev;
+    },
+    bars() {
+      return [...byTime.keys()].sort((a, b) => a - b).map((t) => {
+        const v = byTime.get(t);
+        return { t: v[0], o: v[1], h: v[2], l: v[3], c: v[4], v: v[5] ?? null };
+      });
+    },
+  };
+}
+
 /**
  * Pull `bars` OHLCV bars for `symbol` at timeframe `tf`. Resolves { symbol, tf, bars: [...] }.
  * D1: a `symbol_error`/`series_error` frame (~1.1s) rejects immediately as not_found — no 12s wait.
@@ -156,26 +228,22 @@ function _historyOnce({ symbol, tf = '1D', bars = 300, timeoutMs = 12000 }) {
       ws.send(frame('create_series', [cs, 'sds_1', 's1', 'sym_1', tf, bars, '']));
     });
 
+    const reader = createHistoryReader();
     ws.on('message', (raw) => {
-      const data = raw.toString();
-      const hb = data.match(/~m~\d+~m~(~h~\d+)/);
-      if (hb) { ws.send(`~m~${hb[1].length}~m~${hb[1]}`); return; }        // echo heartbeat
-
-      if (data.includes('symbol_error') || data.includes('series_error')) {
+      const ev = reader.push(raw.toString());
+      // Echo every heartbeat found — even ones batched ahead of real data in the
+      // same message (the old parser returned here and dropped the trailing bars).
+      // `.length` is a byte-accurate prefix here ONLY because a heartbeat (`~h~<digits>`)
+      // is pure ASCII; do not reuse this char-length framing for a UTF-8 payload.
+      for (const echo of ev.heartbeats) ws.send(`~m~${echo.length}~m~${echo}`);
+      // Errors win over any partial bars accumulated so far — a bad symbol never completes.
+      if (ev.error) {
         return finish(() => reject(new MktError('not_found',
           `Unknown or unresolvable symbol "${symbol}".`, `mkt search ${symbol.split(':').pop()} --json`)));
       }
-      if (data.includes('timescale_update') || data.includes('"sds_1"')) {
-        try {
-          for (const j of data.split(/~m~\d+~m~/).filter((x) => x.startsWith('{'))) {
-            const obj = JSON.parse(j);
-            const series = obj?.p?.[1]?.sds_1?.s;
-            if (Array.isArray(series) && series.length) {
-              const out = series.map((b) => ({ t: b.v[0], o: b.v[1], h: b.v[2], l: b.v[3], c: b.v[4], v: b.v[5] ?? null }));
-              return finish(() => resolve({ symbol, tf, bars: out }));
-            }
-          }
-        } catch { /* partial frame — keep listening */ }
+      // Resolve ONLY on explicit completion — never the first non-empty frame.
+      if (ev.completed) {
+        return finish(() => resolve({ symbol, tf, bars: reader.bars() }));
       }
     });
 
