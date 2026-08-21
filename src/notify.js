@@ -53,7 +53,10 @@ function ntfy(title, body) {
 export function ntfyReq(title, body, topic) {
   const header = `Title: ${String(title).replace(/[\r\n]+/g, ' ')}`;
   const input = `url = ${cfgq(`https://ntfy.sh/${topic}`)}\n`;
-  return { cmd: 'curl', args: ['-fsS', '--config', '-', '-H', header, '-d', body], input, secrets: [topic] };
+  // --data-raw, not -d: curl's -d reads a value starting with `@` as a filename, and the body is
+  // caller-controlled (`mkt notify --body=…` carries arbitrary log text), so a `@`-leading body would
+  // POST a local file to ntfy.sh. --data-raw is identical but never interprets `@`.
+  return { cmd: 'curl', args: ['-fsS', '--config', '-', '-H', header, '--data-raw', body], input, secrets: [topic] };
 }
 
 function macBanner(title, body) {

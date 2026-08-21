@@ -67,6 +67,17 @@ test('ntfyReq keeps the topic (a capability token) off argv and registers it for
   assert.ok(secrets.includes(TOPIC));
 });
 
+test('ntfyReq sends the body literally — never curl’s file-reading -d', () => {
+  // curl -d treats a value starting with @ as a filename to read. The ntfy body is caller-controlled
+  // (`mkt notify --body=…` carries arbitrary log text), so a @-leading body under -d would POST a
+  // local file to ntfy.sh. --data-raw is byte-identical but never interprets @.
+  const body = '@/etc/hostname';
+  const { args } = ntfyReq('t', body, 'topic');
+  assert.ok(!args.includes('-d'), 'must not use -d — it reads @-prefixed values as files');
+  const raw = args[args.indexOf('--data-raw') + 1];
+  assert.equal(raw, body, 'the @-leading body must be passed through verbatim');
+});
+
 test('run redacts a secret carried on argv — from err.message and err.cmd', async () => {
   // The other redaction test drives the secret in via stdin; this one puts it on argv (the
   // `Command failed: <argv>` path + err.cmd) to prove both secret-bearing fields are scrubbed.
