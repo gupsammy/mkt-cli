@@ -55,3 +55,27 @@ test('ntfyReq strips CR/LF from the Title header — no header injection', () =>
   assert.ok(!/[\r\n]/.test(titleHeader), `newline survived into the Title header: ${titleHeader}`);
   assert.ok(titleHeader.startsWith('Title: Alert'));
 });
+
+test('ntfyReq keeps the topic (a capability token) off argv and registers it for redaction', () => {
+  const TOPIC = 'my-secret-ntfy-topic';
+  const { args, input, secrets } = ntfyReq('t', 'b', TOPIC);
+  const argv = args.join(' ');
+  assert.ok(!argv.includes(TOPIC), `ntfy topic leaked into argv: ${argv}`);
+  assert.ok(!argv.includes('ntfy.sh'), `topic-bearing URL leaked into argv: ${argv}`);
+  assert.ok(args.includes('--config') && args.includes('-'), 'expected `--config -` to read from stdin');
+  assert.ok(input.includes(TOPIC), 'topic should be supplied via stdin config');
+  assert.ok(secrets.includes(TOPIC));
+});
+
+test('run redacts a secret carried on argv — from err.message and err.cmd', async () => {
+  // The other redaction test drives the secret in via stdin; this one puts it on argv (the
+  // `Command failed: <argv>` path + err.cmd) to prove both secret-bearing fields are scrubbed.
+  const SECRET = 'argv-secret-do-not-leak';
+  const err = await run('sh', ['-c', 'exit 1', SECRET], { secrets: [SECRET] }).then(
+    () => null,
+    (e) => e,
+  );
+  assert.ok(err, 'expected the failing child to reject');
+  assert.ok(!err.message.includes(SECRET), `secret survived in err.message: ${err.message}`);
+  assert.ok(!String(err.cmd ?? '').includes(SECRET), `secret survived in err.cmd: ${err.cmd}`);
+});

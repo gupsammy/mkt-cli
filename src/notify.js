@@ -7,6 +7,11 @@ export async function notify(title, body) {
   await Promise.all([telegram(title, body), ntfy(title, body), macBanner(title, body)]);
 }
 
+// Quote+escape a value for a curl `--config -` file: quoting means a `#` can't start a comment and a
+// newline can't terminate the value; the escape set is exactly curl's (\\ \" \r \n). Used to hide
+// credential-bearing URLs on stdin instead of argv — curl unescapes \n to a newline before it acts.
+const cfgq = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r/g, '\\r').replace(/\n/g, '\\n')}"`;
+
 // Telegram Bot API sendMessage. Setup: message @BotFather → /newbot → token; message your bot once,
 // then read the chat id. Set MKT_TG_TOKEN + MKT_TG_CHAT. The chat log IS the searchable history.
 function telegram(title, body) {
@@ -23,13 +28,11 @@ function telegram(title, body) {
 // list (`ps`) and out of the execFile failure string. `secrets` tells run() what to scrub if it fails.
 export function telegramReq(title, body, token, chat) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
-  // Quote+escape config values so a quote or newline in the body can't terminate the value. curl
-  // unescapes \n to a newline, which --data-urlencode then percent-encodes — same wire body as before.
-  const q = (s) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r/g, '\\r').replace(/\n/g, '\\n')}"`;
+  // --data-urlencode percent-encodes each value, so the wire body is unchanged (title\nbody → …%0A…).
   const input = [
-    `url = ${q(url)}`,
-    `data-urlencode = ${q(`chat_id=${chat}`)}`,
-    `data-urlencode = ${q(`text=${title}\n${body}`)}`,
+    `url = ${cfgq(url)}`,
+    `data-urlencode = ${cfgq(`chat_id=${chat}`)}`,
+    `data-urlencode = ${cfgq(`text=${title}\n${body}`)}`,
     '',
   ].join('\n');
   return { cmd: 'curl', args: ['-fsS', '-G', '--config', '-'], input, secrets: [token, chat] };
@@ -38,15 +41,19 @@ export function telegramReq(title, body, token, chat) {
 function ntfy(title, body) {
   const topic = process.env.MKT_NTFY_TOPIC;
   if (!topic) return Promise.resolve();   // silent opt-in fallback (Telegram is the primary sink)
-  const { cmd, args } = ntfyReq(title, body, topic);
-  return run(cmd, args).catch((e) => process.stderr.write(`# ntfy failed: ${e.message}\n`));
+  const { cmd, args, input, secrets } = ntfyReq(title, body, topic);
+  return run(cmd, args, { input, secrets }).catch((e) =>
+    process.stderr.write(`# ntfy failed: ${e.message}\n`));
 }
 
-// The alert title becomes an HTTP request header (`Title: …`). A CR/LF in it would inject additional
-// headers, so strip them before concatenation — the header is single-line by construction.
+// The ntfy topic is a capability token (whoever knows it can read and publish), so it gets the same
+// treatment as the Telegram token: the URL that embeds it travels via `--config -` on stdin, never
+// argv, and it is registered as a secret for redaction. The alert title becomes an HTTP header
+// (`Title: …`); strip CR/LF first so it can't inject additional headers.
 export function ntfyReq(title, body, topic) {
   const header = `Title: ${String(title).replace(/[\r\n]+/g, ' ')}`;
-  return { cmd: 'curl', args: ['-fsS', '-H', header, '-d', body, `https://ntfy.sh/${topic}`] };
+  const input = `url = ${cfgq(`https://ntfy.sh/${topic}`)}\n`;
+  return { cmd: 'curl', args: ['-fsS', '--config', '-', '-H', header, '-d', body], input, secrets: [topic] };
 }
 
 function macBanner(title, body) {
@@ -57,15 +64,19 @@ function macBanner(title, body) {
     process.stderr.write(`# osascript failed: ${e.message}\n`));
 }
 
-// Shared child-process runner for every sink. `input` is written to the child's stdin (how secrets
-// reach curl without touching argv); `env` overrides the child environment. On failure the rejected
-// error is scrubbed of every value in `secrets` — Node folds the child's stderr into err.message, and
-// that message is what the sinks write to a plaintext log, so redaction here protects all callers.
-export function run(cmd, args, { input, env, secrets = [] } = {}) {
+// Shared child-process runner for every sink. `input` is written to the child's stdin — how secrets
+// reach curl without touching argv. On failure the rejected error is scrubbed of every value in
+// `secrets`: Node folds the child's stderr into err.message, and the sinks write that message to a
+// plaintext log, so redacting here (message and cmd, the two secret-bearing fields) protects all callers.
+export function run(cmd, args, { input, secrets = [] } = {}) {
   return new Promise((res, rej) => {
-    const child = execFile(cmd, args, { timeout: 10000, env: env ?? process.env }, (err, stdout) => {
+    const child = execFile(cmd, args, { timeout: 10000 }, (err, stdout) => {
       if (!err) return res(stdout);
-      for (const s of secrets) if (s) err.message = err.message.split(s).join('[REDACTED]');
+      for (const s of secrets) {
+        if (!s) continue;
+        err.message = err.message.split(s).join('[REDACTED]');
+        if (err.cmd) err.cmd = err.cmd.split(s).join('[REDACTED]');
+      }
       rej(err);
     });
     // A fast-failing child can close stdin before we finish writing — swallow the EPIPE so it surfaces

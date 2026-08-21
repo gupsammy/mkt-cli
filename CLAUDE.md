@@ -146,9 +146,10 @@ ownership, and prune safety), `record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
 cases spawn a real child process), `backup-sweep` (backup collects day-old staged tmps from the
 source archive and touches nothing else; end-to-end through the real CLI: ingest → backup), and
-`notify-redaction` (the notify sinks keep the Telegram bot token off curl's argv — it travels via a
-`--config -` stdin file — and the shared runner scrubs every registered secret from a failed child's
-diagnostic before it reaches a log; also asserts ntfy's Title header is CR/LF-sanitised).
+`notify-redaction` (both notify sinks keep their credential — the Telegram bot token and the ntfy
+topic — off curl's argv by feeding the token-bearing URL through a `--config -` stdin file, and the
+shared runner scrubs every registered secret from a failed child's diagnostic, message and cmd, before
+it reaches a log; also asserts ntfy's Title header is CR/LF-sanitised against header injection).
 
 `test/size-hints.test.js` asserts the **hint contract** — a command-level error hint must be a
 command line that actually runs, so the suite spawns the real CLI rather than importing `size()`.
