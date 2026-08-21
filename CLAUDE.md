@@ -112,9 +112,11 @@ only tv's MCP registration + skill wrapper, not the CLI.
   is committed **only if ≥1 sink actually delivered** (issue #16): on total delivery failure the
   entrant is withheld so it re-fires next check — the `check` summary row carries `notified` (a sink
   took it) and, when withheld, `delivery: 'failed'` + exit 1. Skipped-vs-failed keys on *configured
-  vs not*: the always-on banner off a Mac (osascript absent, ENOENT) is *skipped*; but a configured
-  Telegram/ntfy whose `curl` is missing is a *failure* (a configured sink that can't deliver — else
-  #16 re-opens silently). Departures always close regardless of send outcome. Two kinds:
+  vs not*, not the errno: the banner is a real sink only ON a Mac, so off-Mac an absent `osascript`
+  (ENOENT) is *skipped*, but on a Mac a missing `osascript` (broken launchd PATH) is a *failure*;
+  likewise a configured Telegram/ntfy whose `curl` is missing is a *failure* (a configured sink that
+  can't deliver — else #16 re-opens silently). Departures always close regardless of send outcome.
+  Two kinds:
   `live` (a `screen --where` filter, run against the live scanner every 15m during market hours) and
   `panel` (a SQL query over `mkt.db`, run once/day after ingest). Definitions + state live in
   `mkt.db` (`alerts`, `alert_hits`); both kinds fan out to all three sinks (below).

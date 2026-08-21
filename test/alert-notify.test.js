@@ -170,21 +170,31 @@ test('dry-run writes nothing and sends nothing', (t) => {
   assert.equal(fx.sinkLog(), '', 'dry-run must not invoke any sink');
 });
 
-// Review #48 🟡 finding #1: an absent sink binary (ENOENT) is 'skipped', not 'failed'. A host with
-// no sinks at all (nothing configured, osascript missing off-Mac) must still commit — otherwise the
-// always-on banner turns every run into a total failure and wedges the state machine forever.
-test('no reachable sink (all absent/unconfigured) still commits — ENOENT is skipped, not failed', (t) => {
+// Review #48 findings #1 (round 1) + P2 (round 3): an absent banner binary is 'skipped' ONLY off a
+// Mac — there it is genuinely no sink, so an all-unconfigured host still commits (never wedges). ON a
+// Mac the always-on banner IS an expected sink, so a missing `osascript` (broken launchd PATH) is a
+// real failure: the hit is withheld and retried loudly rather than committed unnotified. The outcome
+// is therefore platform-keyed; assert the branch for the host the suite runs on.
+test('all-absent sink: off-Mac commits (skipped); on-Mac withholds (banner ENOENT = failure)', (t) => {
   const fx = fixture(t);
   let r = fx.run(['alert', 'add', 'panelE', '--sql', "SELECT 'EEE' AS symbol"]);
   assert.equal(r.status, 0, r.stderr);
 
-  // Telegram/ntfy unconfigured (skipped by env), and PATH has no osascript → banner ENOENT → skipped.
+  // Telegram/ntfy unconfigured (skipped by env), and PATH has no osascript → banner hits ENOENT.
   r = fx.run(['alert', 'check', '--kind', 'panel', '--json'], { isolate: true });
-  assert.equal(r.status, 0, `an all-absent-sink host must not wedge (exit 0)\n${r.stderr}`);
   const row = rows(r.stdout).find((x) => x.alert === 'panelE');
   assert.equal(row.entered, 1);
-  assert.equal(row.delivery, undefined, 'nothing attempted is not a delivery failure');
-  assert.equal(activeHits(fx), 1, 'hit commits when no sink was even attempted');
+  if (process.platform === 'darwin') {
+    // Banner is an expected sink here → its missing binary is a delivery failure, not "no sink".
+    assert.equal(r.status, 1, `on a Mac a missing banner must withhold, not commit\n${r.stderr}`);
+    assert.equal(row.delivery, 'failed');
+    assert.equal(activeHits(fx), 0, 'on-Mac total failure withholds the hit');
+  } else {
+    // No banner off a Mac → all sinks skipped → attempted 0 → commit, don't wedge.
+    assert.equal(r.status, 0, `an all-absent-sink host off-Mac must not wedge (exit 0)\n${r.stderr}`);
+    assert.equal(row.delivery, undefined, 'nothing attempted is not a delivery failure');
+    assert.equal(activeHits(fx), 1, 'hit commits when no sink was even attempted');
+  }
 });
 
 // Review #48 🟡 finding #2: execFile echoes the full argv, and the Telegram URL carries the bot

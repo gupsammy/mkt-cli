@@ -19,13 +19,16 @@ export async function notify(title, body) {
 
 // Each sink resolves to one of 'delivered' | 'failed' | 'skipped'. Failures still log to stderr (as
 // before) but are now also reported to the caller instead of being silently swallowed.
-//   The distinction that matters is CONFIGURED vs NOT, not the errno. macBanner is the one always-on,
-//   never-opted-into sink: off a Mac its binary is absent (execFile ENOENT), which means "no banner
-//   here", not "delivery failed" — so it's 'skipped' (absentIsSkip). Counting it as a failure would
-//   wedge alert state on any non-Mac host (always-on banner → permanent total-failure → every hit
-//   withheld forever). Telegram/ntfy are reached ONLY after the operator configured them, so for them
-//   even a missing `curl` is a configured sink that cannot deliver — a real 'failed' (issue #16: if it
-//   silently became 'skipped', attempted would drop to 0 and the hit would commit unnotified).
+//   The distinction that matters is CONFIGURED vs NOT, not the errno. macBanner is the always-on
+//   sink, but only ON a Mac: off a Mac its binary is absent (execFile ENOENT), meaning "no banner
+//   here", not "delivery failed" — so there it's 'skipped' (absentIsSkip). Counting that as a failure
+//   would wedge alert state on any non-Mac host (permanent total-failure → every hit withheld
+//   forever). ON a Mac the banner IS a real expected sink, so a missing `osascript` (e.g. a broken
+//   launchd PATH) is a genuine 'failed' — withhold and retry loudly, don't commit unnotified. Hence
+//   absentIsSkip = (platform !== darwin). Telegram/ntfy are reached ONLY after the operator
+//   configured them, so for them too a missing `curl` is a configured sink that cannot deliver — a
+//   real 'failed' (issue #16: if it silently became 'skipped', attempted would drop to 0 and the hit
+//   would commit unnotified).
 // execFile's error message echoes the full argv, and the Telegram/ntfy URLs carry the secret token /
 // topic — so redact before writing, or a revoked-token retry loops the secret into the launchd log
 // every 15m.
@@ -58,7 +61,9 @@ function macBanner(title, body) {
   // Escape double-quotes for the AppleScript string literals.
   const esc = (s) => String(s).replace(/"/g, '\\"');
   const script = `display notification "${esc(body)}" with title "${esc(title)}"`;
-  return run('osascript', ['-e', script]).then(ok).catch(failedWith('osascript', true));
+  // Off a Mac there is no banner (osascript absent) → skip; on a Mac a missing osascript is a real
+  // failure, not an absent sink, so it must be withheld and retried rather than silently committed.
+  return run('osascript', ['-e', script]).then(ok).catch(failedWith('osascript', process.platform !== 'darwin'));
 }
 
 function run(cmd, args) {
