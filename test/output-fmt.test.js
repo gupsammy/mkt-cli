@@ -23,6 +23,10 @@ test('sub-1e-4 values never collapse to 0 in table mode', () => {
   assert.equal(objLine({ close: 0.000001 }), 'close: 0.000001\n');
   assert.equal(objLine({ close: 0.00003 }), 'close: 0.00003\n');
   assert.equal(objLine({ close: -0.000001 }), 'close: -0.000001\n');
+  // Below 1e-6 String() switches to exponential — still non-zero and truthful, which is the whole
+  // point. Pin the shape so it stays intended, not incidental (the fix's out-of-scope note only bars
+  // sci-notation for LARGE values).
+  assert.equal(objLine({ close: 1e-7 }), 'close: 1e-7\n');
 });
 
 test('ordinary-magnitude decimals format byte-identically to today', () => {
@@ -50,8 +54,9 @@ test('--json and --compact carry raw precision, byte-identical to today', () => 
 });
 
 test('table rows keep sub-1e-4 values non-zero and align to the widened cell', () => {
-  // Capturing stdout is non-TTY, so printRows leaves the header un-bolded and column widths are stable.
   const out = capture(() => printRows([{ symbol: 'DECN', close: 0.000001 }]));
   const lines = out.split('\n');
+  // Assert on the data row (lines[1]): bolding only ever wraps the header, so header TTY-bolding is
+  // irrelevant here regardless of how the runner was launched — that is why this assertion is stable.
   assert.match(lines[1], /^DECN\s+0\.000001$/);
 });
