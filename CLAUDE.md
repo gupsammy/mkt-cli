@@ -140,12 +140,15 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Five suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
+Six suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
 (corrupt-file continuation, retry visibility, partial-success output, offsets, notification
 ownership, and prune safety), `record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
 cases spawn a real child process), `backup-sweep` (backup collects day-old staged tmps from the
-source archive and touches nothing else; end-to-end through the real CLI: ingest → backup), and
+source archive and touches nothing else; end-to-end through the real CLI: ingest → backup),
+`output-fmt` (the human table formatter never renders a non-zero number as `0` — sub-$0.0001 tickers
+kept non-zero via significant figures — while integers, null, arrays, strings, ordinary decimals, and
+the `--json`/`--compact` paths stay byte-identical; drives the public `printRows`/`printObject`), and
 `alert-notify` (issue #16: an alert hit commits only when a sink actually delivered — total send
 failure withholds the entrant so it re-fires, departures still close, dry-run writes nothing; it
 shadows `curl`/`osascript` on PATH to make the sinks deterministic and drives panel alerts offline).
