@@ -79,16 +79,42 @@ test('ntfyReq sends the body literally — never curl’s file-reading -d', () =
   assert.equal(raw, body, 'the @-leading body must be passed through verbatim');
 });
 
-test('macBannerReq escapes a backslash-before-quote body — no AppleScript injection', { skip: process.platform !== 'darwin' && 'osascript is macOS-only' }, () => {
+// Tokenize AppleScript double-quoted string literals exactly as the parser does: a backslash escapes
+// the next char (consume both), a *bare* quote delimits. A regex can't model this — under broken
+// escaping the body's `\"` becomes a bare quote that closes the literal early, and only a real walk
+// sees it. Platform-independent, so it guards the fix on CI (ubuntu); the osascript run below is the
+// macOS cross-check.
+function appleScriptLiterals(src) {
+  const out = [];
+  for (let i = 0; i < src.length; i++) {
+    if (src[i] !== '"') continue;
+    let s = '';
+    for (i++; i < src.length && src[i] !== '"'; i++) {
+      if (src[i] === '\\') { s += src[++i] ?? ''; } else s += src[i];
+    }
+    out.push(s);
+  }
+  return out;
+}
+
+test('macBannerReq escapes a backslash-before-quote body — no AppleScript injection (every platform)', () => {
   // esc must escape backslash before quote; otherwise `\"` in caller text (`mkt notify --body=…`)
-  // closes the string literal and the rest is executed as AppleScript. Prove the generated program
-  // compiles and treats the body as inert data by having osascript hand the string right back.
+  // closes the string literal and the rest runs as AppleScript.
+  const body = 'regex /a\\"b/ and trailing \\';   // contains \" and ends in a lone backslash
+  const title = 'mkt-record';
+  const { cmd, args } = macBannerReq(title, body);
+  assert.equal(cmd, 'osascript');
+  // A correctly-escaped script tokenizes to exactly [body, title]. Broken escaping closes the body
+  // literal early, so the first token is a truncated body and the count/values drift.
+  assert.deepEqual(appleScriptLiterals(args[1]), [body, title], 'body/title must survive as inert data');
+});
+
+test('macBannerReq output compiles and round-trips through real osascript', { skip: process.platform !== 'darwin' && 'osascript is macOS-only' }, () => {
   const body = String.raw`regex /a\"b/ failed`;
   const { args } = macBannerReq('mkt-record', body);
-  const script = args[1];
-  // Rewrite `display notification …` to `return …` so osascript echoes the body literal instead of
-  // firing a banner — same string tokens, so it exercises the exact escaping.
-  const probe = script.replace('display notification', 'return').replace(/ with title .*/, '');
+  // Rewrite `display notification …` → `return …` so osascript echoes the body instead of firing a
+  // banner — same string tokens, so it exercises the exact escaping against the real parser.
+  const probe = args[1].replace('display notification', 'return').replace(/ with title .*/, '');
   const out = execFileSync('osascript', ['-e', probe], { encoding: 'utf8' }).trim();
   assert.equal(out, body, 'body must survive as inert data, not break out of the literal');
 });
