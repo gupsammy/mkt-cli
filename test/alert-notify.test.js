@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 import test from 'node:test';
+import { notify } from '../src/notify.js';
 
 // Issue #16: an alert hit must be committed only when at least one notification sink actually
 // delivered. On total delivery failure the entrant is withheld so it re-fires next check, rather
@@ -229,4 +230,34 @@ test('configured Telegram with no curl on the host is a failure, not a skip (wit
   assert.equal(row.delivery, 'failed');
   assert.ok(/telegram failed/.test(r.stderr), `the failure must be loud, not silent\n${r.stderr}`);
   assert.equal(activeHits(fx), 0, 'the hit must be withheld so it re-fires — not committed unnotified');
+});
+
+// Review #48 round 4 🟢: the round-3 rule `absentIsSkip = (platform !== 'darwin')` is asserted by the
+// spawn tests ONLY on a Mac — on CI (Linux) that branch is dead, so a regression flipping it back to a
+// bare `true` (the round-2 bug's shape) would leave CI green. Defend BOTH branches in-process by
+// stubbing process.platform, so the rule is checked on every host. notify() only spawns osascript here
+// (Telegram/ntfy unconfigured → skipped, no network); an empty PATH makes osascript ENOENT.
+test('notify(): a missing banner is failed on darwin, skipped off-darwin (platform-stubbed)', async (t) => {
+  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+  const realPath = process.env.PATH;
+  const realTg = process.env.MKT_TG_TOKEN, realChat = process.env.MKT_TG_CHAT, realNtfy = process.env.MKT_NTFY_TOPIC;
+  t.after(() => {
+    Object.defineProperty(process, 'platform', realPlatform);
+    process.env.PATH = realPath;
+    if (realTg === undefined) delete process.env.MKT_TG_TOKEN; else process.env.MKT_TG_TOKEN = realTg;
+    if (realChat === undefined) delete process.env.MKT_TG_CHAT; else process.env.MKT_TG_CHAT = realChat;
+    if (realNtfy === undefined) delete process.env.MKT_NTFY_TOPIC; else process.env.MKT_NTFY_TOPIC = realNtfy;
+  });
+  delete process.env.MKT_TG_TOKEN; delete process.env.MKT_TG_CHAT; delete process.env.MKT_NTFY_TOPIC;
+  process.env.PATH = '';   // osascript unresolvable → ENOENT
+
+  const setPlatform = (p) => Object.defineProperty(process, 'platform', { value: p, configurable: true });
+
+  setPlatform('darwin');
+  assert.deepEqual(await notify('t', 'b'), { delivered: 0, failed: 1, attempted: 1 },
+    'on darwin a missing osascript is a real delivery failure (attempted:1)');
+
+  setPlatform('linux');
+  assert.deepEqual(await notify('t', 'b'), { delivered: 0, failed: 0, attempted: 0 },
+    'off darwin there is no banner sink — absent osascript is skipped (attempted:0)');
 });
