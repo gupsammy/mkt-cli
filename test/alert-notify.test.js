@@ -202,3 +202,21 @@ test('a failing Telegram send does not leak the bot token to stderr', (t) => {
   assert.ok(!r.stderr.includes(secret), `bot token must not appear in stderr:\n${r.stderr}`);
   assert.ok(r.stderr.includes('/bot***/'), `token must be redacted to /bot***/\n${r.stderr}`);
 });
+
+// Review #48 round 2 🟡: ENOENT→skipped must be opt-in (banner only). A CONFIGURED Telegram sink
+// whose `curl` binary is missing is a configured-sink-can't-deliver = FAILURE, not skipped —
+// otherwise attempted drops to 0, the hit commits unnotified, and issue #16 re-opens silently.
+test('configured Telegram with no curl on the host is a failure, not a skip (withheld, loud)', (t) => {
+  const fx = fixture(t);
+  let r = fx.run(['alert', 'add', 'panelG', '--sql', "SELECT 'GGG' AS symbol"]);
+  assert.equal(r.status, 0, r.stderr);
+
+  // Telegram configured, but PATH has no curl (isolate) → the configured sink cannot deliver.
+  r = fx.run(['alert', 'check', '--kind', 'panel', '--json'], { telegram: true, isolate: true });
+  assert.equal(r.status, 1, `a configured-but-unreachable sink must be a delivery failure\n${r.stderr}`);
+  const row = rows(r.stdout).find((x) => x.alert === 'panelG');
+  assert.equal(row.entered, 1);
+  assert.equal(row.delivery, 'failed');
+  assert.ok(/telegram failed/.test(r.stderr), `the failure must be loud, not silent\n${r.stderr}`);
+  assert.equal(activeHits(fx), 0, 'the hit must be withheld so it re-fires — not committed unnotified');
+});

@@ -6,7 +6,8 @@ import { execFile } from 'node:child_process';
 //
 // Returns a delivery tally so callers can tell "reached someone" from "reached no one" (issue #16):
 //   { delivered, failed, attempted }   attempted = delivered + failed  (skipped sinks excluded).
-// A sink is 'skipped' when it is unconfigured (opt-in Telegram/ntfy with no env) — that is NOT a
+// A sink is 'skipped' when it is unconfigured (opt-in Telegram/ntfy with no env), or when the
+// always-on banner's binary is absent off a Mac (see the per-sink rule below) — that is NOT a
 // failure, so a banner-only Mac still reports delivered:1. `attempted > 0 && delivered === 0` is a
 // TOTAL delivery failure: nothing reached anyone, and the alert check withholds the hit so it retries.
 export async function notify(title, body) {
@@ -18,16 +19,19 @@ export async function notify(title, body) {
 
 // Each sink resolves to one of 'delivered' | 'failed' | 'skipped'. Failures still log to stderr (as
 // before) but are now also reported to the caller instead of being silently swallowed.
-//   ENOENT (the sink's binary isn't installed on this host — e.g. `osascript` off a Mac) is 'skipped',
-//   NOT 'failed': an absent sink was never attempted, exactly like an unconfigured token. Counting it
-//   as a failure would wedge alert state on any non-Mac host (the always-on banner → permanent
-//   total-failure → every hit withheld forever). A binary that runs and exits non-zero is a real 'failed'.
+//   The distinction that matters is CONFIGURED vs NOT, not the errno. macBanner is the one always-on,
+//   never-opted-into sink: off a Mac its binary is absent (execFile ENOENT), which means "no banner
+//   here", not "delivery failed" — so it's 'skipped' (absentIsSkip). Counting it as a failure would
+//   wedge alert state on any non-Mac host (always-on banner → permanent total-failure → every hit
+//   withheld forever). Telegram/ntfy are reached ONLY after the operator configured them, so for them
+//   even a missing `curl` is a configured sink that cannot deliver — a real 'failed' (issue #16: if it
+//   silently became 'skipped', attempted would drop to 0 and the hit would commit unnotified).
 // execFile's error message echoes the full argv, and the Telegram/ntfy URLs carry the secret token /
 // topic — so redact before writing, or a revoked-token retry loops the secret into the launchd log
 // every 15m.
 const ok = () => 'delivered';
-const failedWith = (kind) => (e) =>
-  e.code === 'ENOENT' ? 'skipped'
+const failedWith = (kind, absentIsSkip = false) => (e) =>
+  absentIsSkip && e.code === 'ENOENT' ? 'skipped'   // always-on banner, binary absent → not a sink here
     : (process.stderr.write(`# ${kind} failed: ${redact(e.message)}\n`), 'failed');
 const redact = (m) => String(m)
   .replace(/\/bot[^/\s]+\//g, '/bot***/')          // telegram: …/bot<token>/sendMessage
@@ -54,7 +58,7 @@ function macBanner(title, body) {
   // Escape double-quotes for the AppleScript string literals.
   const esc = (s) => String(s).replace(/"/g, '\\"');
   const script = `display notification "${esc(body)}" with title "${esc(title)}"`;
-  return run('osascript', ['-e', script]).then(ok).catch(failedWith('osascript'));
+  return run('osascript', ['-e', script]).then(ok).catch(failedWith('osascript', true));
 }
 
 function run(cmd, args) {
