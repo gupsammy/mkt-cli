@@ -154,7 +154,9 @@ topic — off curl's argv by feeding the token-bearing URL through a `--config -
 shared runner scrubs every registered secret from a failed child's diagnostic, message and cmd, before
 it reaches a log; also asserts ntfy sends its body with `--data-raw` so a `@`-leading body can't make
 curl read a local file, ntfy's Title header is CR/LF-sanitised, and the macOS banner escapes
-backslash-before-quote so a body can't break out of the osascript string literal — macOS-only).
+backslash-before-quote so a body can't break out of the osascript string literal — the banner-escape
+guard tokenizes the generated AppleScript and runs on every platform; only its real-osascript
+cross-check is macOS-only).
 
 `test/size-hints.test.js` asserts the **hint contract** — a command-level error hint must be a
 command line that actually runs, so the suite spawns the real CLI rather than importing `size()`.

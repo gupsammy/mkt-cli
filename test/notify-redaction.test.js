@@ -79,11 +79,12 @@ test('ntfyReq sends the body literally — never curl’s file-reading -d', () =
   assert.equal(raw, body, 'the @-leading body must be passed through verbatim');
 });
 
-// Tokenize AppleScript double-quoted string literals exactly as the parser does: a backslash escapes
-// the next char (consume both), a *bare* quote delimits. A regex can't model this — under broken
-// escaping the body's `\"` becomes a bare quote that closes the literal early, and only a real walk
-// sees it. Platform-independent, so it guards the fix on CI (ubuntu); the osascript run below is the
-// macOS cross-check.
+// Tokenize AppleScript double-quoted string literals by the two escaping rules that matter here: a
+// backslash escapes the next char (consume both), a *bare* quote delimits. (A raw newline is fine
+// inside a literal — verified on macOS — so it needs no escaping and none is modelled.) A regex can't
+// model even this much — under broken escaping the body's `\"` becomes a bare quote that closes the
+// literal early, and only a real walk sees it. Platform-independent, so it guards the fix on CI
+// (ubuntu); the osascript run below is the macOS cross-check.
 function appleScriptLiterals(src) {
   const out = [];
   for (let i = 0; i < src.length; i++) {
