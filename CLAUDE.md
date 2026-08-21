@@ -140,12 +140,15 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Four suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
+Five suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
 (corrupt-file continuation, retry visibility, partial-success output, offsets, notification
 ownership, and prune safety), `record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
-cases spawn a real child process), and `backup-sweep` (backup collects day-old staged tmps from the
-source archive and touches nothing else; end-to-end through the real CLI: ingest → backup).
+cases spawn a real child process), `backup-sweep` (backup collects day-old staged tmps from the
+source archive and touches nothing else; end-to-end through the real CLI: ingest → backup), and
+`output-fmt` (the human table formatter never renders a non-zero number as `0` — sub-$0.0001 tickers
+kept non-zero via significant figures — while integers, null, arrays, strings, ordinary decimals, and
+the `--json`/`--compact` paths stay byte-identical; drives the public `printRows`/`printObject`).
 
 `test/size-hints.test.js` asserts the **hint contract** — a command-level error hint must be a
 command line that actually runs, so the suite spawns the real CLI rather than importing `size()`.
