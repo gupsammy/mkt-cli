@@ -162,6 +162,7 @@ export function classifyEnvelope(payload) {
  */
 export function createHistoryReader() {
   const byTime = new Map();
+  let unparseable = 0;   // cumulative count of envelopes that failed to parse
   return {
     push(raw) {
       const ev = { heartbeats: [], completed: false, error: false };
@@ -174,11 +175,16 @@ export function createHistoryReader() {
             break;
           case 'series_completed': ev.completed = true; break;
           case 'error': ev.error = true; break;
-          default: break;   // other / unparseable → ignore, keep listening
+          case 'unparseable': unparseable++; break;   // count it — never resolve a maybe-short set silently
+          default: break;   // other → ignore, keep listening
         }
       }
       return ev;
     },
+    // A parsed `series_completed` is only trustworthy if NO sibling failed to parse:
+    // a dropped envelope means the bar set may be silently short, so the caller must
+    // fail loud (and retry) rather than resolve a corrupt/partial history.
+    unparseable() { return unparseable; },
     bars() {
       return [...byTime.keys()].sort((a, b) => a - b).map((t) => {
         const v = byTime.get(t);
@@ -243,6 +249,16 @@ function _historyOnce({ symbol, tf = '1D', bars = 300, timeoutMs = 12000 }) {
       }
       // Resolve ONLY on explicit completion — never the first non-empty frame.
       if (ev.completed) {
+        // ...but a completion that arrived alongside an unparseable envelope may be
+        // hiding a silently-short bar set. Fail loud as retryable `upstream` (transient
+        // wire glitch self-heals across the 3 retries; persistent drift fails loud)
+        // rather than emit maybe-corrupt history at exit 0.
+        const dropped = reader.unparseable();
+        if (dropped) {
+          return finish(() => reject(new MktError('upstream',
+            `Corrupt history frame for ${symbol}: ${dropped} unparseable envelope(s) — bar set may be incomplete.`,
+            `mkt history ${symbol} --tf ${tf} --bars ${bars}`)));
+        }
         return finish(() => resolve({ symbol, tf, bars: reader.bars() }));
       }
     });

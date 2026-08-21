@@ -83,6 +83,29 @@ test('BUG #2 fixed: a malformed envelope does not drop its siblings in the same 
   const ev = reader.push(poisoned);
   assert.equal(ev.completed, true, 'series_completed survives the bad sibling');
   assert.equal(reader.bars().length, 5, 'bars survive the bad sibling');
+  // ...but the parse failure is NOT swallowed — it is counted so the caller can fail loud.
+  assert.equal(reader.unparseable(), 1, 'the dropped envelope is retained, not silently ignored');
+});
+
+test('a completion arriving with an unparseable sibling is flagged so the caller can fail loud', () => {
+  // Codex P1 / silent-truncation guard: an unparseable envelope + a valid series_completed
+  // in one batch must NOT be trusted as a clean result — the bar set may be silently short.
+  // The reader keeps parsing valid siblings (bug #2) but reports the drop; `_historyOnce`
+  // then rejects as retryable `upstream` rather than resolving corrupt history at exit 0.
+  const reader = createHistoryReader();
+  const done = '{"m":"series_completed","p":[]}';
+  const bad = '{ half a frame';
+  const msg = `~m~${bad.length}~m~${bad}~m~${done.length}~m~${done}`;
+  const ev = reader.push(msg);
+  assert.equal(ev.completed, true, 'the completion is still observed');
+  assert.equal(reader.unparseable(), 1, 'and the dropped sibling is reported, not hidden');
+});
+
+test('a clean response reports zero unparseable envelopes', () => {
+  const msgs = load('history-ok.json');
+  const reader = createHistoryReader();
+  for (const m of msgs) reader.push(m);
+  assert.equal(reader.unparseable(), 0, 'healthy wire data never trips the corrupt-frame guard');
 });
 
 test('BUG #3 fixed: a lone `du` tick frame does NOT resolve the request', () => {
