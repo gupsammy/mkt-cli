@@ -140,12 +140,19 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Four suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
+Five suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
 (corrupt-file continuation, retry visibility, partial-success output, offsets, notification
 ownership, and prune safety), `record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
-cases spawn a real child process), and `backup-sweep` (backup collects day-old staged tmps from the
-source archive and touches nothing else; end-to-end through the real CLI: ingest → backup).
+cases spawn a real child process), `backup-sweep` (backup collects day-old staged tmps from the
+source archive and touches nothing else; end-to-end through the real CLI: ingest → backup), and
+`history-parser` (the batched-`~m~<len>~m~` envelope contract for the history WebSocket — the three
+data-integrity bugs of issue #12). It tests the pure, WS-free seam `providers/tradingview.js` now
+exposes (`splitEnvelopes`/`classifyEnvelope`/`createHistoryReader`) against **real captured wire
+bytes** (`test/fixtures/history-*.json`); extracting the parser from the socket is what turns TV's
+otherwise un-triggerable-live heartbeat-batching race into a deterministic fixture. A `series_completed`
+that arrives alongside an unparseable sibling is rejected as retryable `upstream`, never resolved as a
+silently-short bar set.
 
 `test/size-hints.test.js` asserts the **hint contract** — a command-level error hint must be a
 command line that actually runs, so the suite spawns the real CLI rather than importing `size()`.

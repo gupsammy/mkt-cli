@@ -1,0 +1,4 @@
+[
+  "~m~294~m~{\"session_id\":\"0.243075849.0_tyo1-charts-free-3-tvbs-yarfh-2\",\"timestamp\":1787292489,\"timestampMs\":1787292489922,\"release\":\"release_209-23\",\"studies_metadata_hash\":\"0fd29e4fdd03e654cf64f97efb4cd78bef47feac\",\"auth_scheme_vsn\":2,\"protocol\":\"json\",\"via\":\"92.223.46.207:443\",\"javastudies\":[\"3.66\"]}",
+  "~m~89~m~{\"m\":\"series_loading\",\"p\":[\"cs_urdpo2\",\"sds_1\",\"s1\"],\"t\":1787292490,\"t_ms\":1787292490212}~m~99~m~{\"m\":\"symbol_error\",\"p\":[\"cs_urdpo2\",\"sym_1\",\"invalid symbol\"],\"t\":1787292490,\"t_ms\":1787292490212}~m~169~m~{\"m\":\"series_error\",\"p\":[\"cs_urdpo2\",\"sds_1\",\"s1\",\"resolve error\",\"tyo1-charts-free-3-tvbs-yarfh-2@tyo1-charts-free-3-tvbs-yarfh-2\"],\"t\":1787292490,\"t_ms\":1787292490212}"
+]
