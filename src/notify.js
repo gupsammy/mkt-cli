@@ -18,8 +18,20 @@ export async function notify(title, body) {
 
 // Each sink resolves to one of 'delivered' | 'failed' | 'skipped'. Failures still log to stderr (as
 // before) but are now also reported to the caller instead of being silently swallowed.
-const delivered = () => 'delivered';
-const failedWith = (kind) => (e) => { process.stderr.write(`# ${kind} failed: ${e.message}\n`); return 'failed'; };
+//   ENOENT (the sink's binary isn't installed on this host — e.g. `osascript` off a Mac) is 'skipped',
+//   NOT 'failed': an absent sink was never attempted, exactly like an unconfigured token. Counting it
+//   as a failure would wedge alert state on any non-Mac host (the always-on banner → permanent
+//   total-failure → every hit withheld forever). A binary that runs and exits non-zero is a real 'failed'.
+// execFile's error message echoes the full argv, and the Telegram/ntfy URLs carry the secret token /
+// topic — so redact before writing, or a revoked-token retry loops the secret into the launchd log
+// every 15m.
+const ok = () => 'delivered';
+const failedWith = (kind) => (e) =>
+  e.code === 'ENOENT' ? 'skipped'
+    : (process.stderr.write(`# ${kind} failed: ${redact(e.message)}\n`), 'failed');
+const redact = (m) => String(m)
+  .replace(/\/bot[^/\s]+\//g, '/bot***/')          // telegram: …/bot<token>/sendMessage
+  .replace(/(ntfy\.sh\/)[^/\s]+/g, '$1***');       // ntfy: ntfy.sh/<topic>
 
 // Telegram Bot API sendMessage. Setup: message @BotFather → /newbot → token; message your bot once,
 // then read the chat id. Set MKT_TG_TOKEN + MKT_TG_CHAT. The chat log IS the searchable history.
@@ -28,21 +40,21 @@ function telegram(title, body) {
   if (!token || !chat) return Promise.resolve('skipped');   // silent — Telegram is opt-in
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   return run('curl', ['-fsS', '-G', url, '--data-urlencode', `chat_id=${chat}`,
-    '--data-urlencode', `text=${title}\n${body}`]).then(delivered).catch(failedWith('telegram'));
+    '--data-urlencode', `text=${title}\n${body}`]).then(ok).catch(failedWith('telegram'));
 }
 
 function ntfy(title, body) {
   const topic = process.env.MKT_NTFY_TOPIC;
   if (!topic) return Promise.resolve('skipped');   // silent opt-in fallback (Telegram is the primary sink)
   const url = `https://ntfy.sh/${topic}`;
-  return run('curl', ['-fsS', '-H', `Title: ${title}`, '-d', body, url]).then(delivered).catch(failedWith('ntfy'));
+  return run('curl', ['-fsS', '-H', `Title: ${title}`, '-d', body, url]).then(ok).catch(failedWith('ntfy'));
 }
 
 function macBanner(title, body) {
   // Escape double-quotes for the AppleScript string literals.
   const esc = (s) => String(s).replace(/"/g, '\\"');
   const script = `display notification "${esc(body)}" with title "${esc(title)}"`;
-  return run('osascript', ['-e', script]).then(delivered).catch(failedWith('osascript'));
+  return run('osascript', ['-e', script]).then(ok).catch(failedWith('osascript'));
 }
 
 function run(cmd, args) {

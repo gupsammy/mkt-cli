@@ -23,10 +23,12 @@ function fixture(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, 'home');
   const binDir = path.join(root, 'bin');
+  const emptyBin = path.join(root, 'empty-bin');   // no curl/osascript → the sinks hit ENOENT
   const sinkLog = path.join(root, 'sinks.log');
   const snapshotDir = path.join(home, 'snapshots', 'america');
   fs.mkdirSync(snapshotDir, { recursive: true });
   fs.mkdirSync(binDir);
+  fs.mkdirSync(emptyBin);
 
   // Both shims log the attempt, then exit with the code the env demands (default: success). A
   // non-zero exit makes `curl -fsS` / `osascript` look like a dead sink, exactly as a revoked token
@@ -46,14 +48,18 @@ function fixture(t) {
 
   return {
     // Run the CLI with per-call sink control. `sinks` selects which sinks are configured/succeed.
+    //   telegram: configure Telegram (curl-backed). tgToken: override the token value (leak test).
+    //   curlExit/osaExit: exit code of the curl/osascript shim (default: fail).
+    //   isolate: PATH with NO curl/osascript at all → every sink binary is ENOENT (absent-host test).
     run(args, sinks = {}) {
       const env = { ...baseEnv };
       // Telegram is opt-in: configured only when we want it attempted.
-      if (sinks.telegram) { env.MKT_TG_TOKEN = 'tok'; env.MKT_TG_CHAT = 'chat'; }
+      if (sinks.telegram) { env.MKT_TG_TOKEN = sinks.tgToken || 'tok'; env.MKT_TG_CHAT = 'chat'; }
       // curl (Telegram/ntfy) exit code; osascript (banner) exit code. Default both to failing so a
       // test must explicitly opt a sink into delivering.
       env.MKT_TEST_CURL_EXIT = String(sinks.curlExit ?? 1);
       env.MKT_TEST_OSA_EXIT = String(sinks.osaExit ?? 1);
+      if (sinks.isolate) env.PATH = emptyBin;   // shims unreachable → spawn ENOENT
       return spawnSync(process.execPath, [CLI, ...args], { env, encoding: 'utf8' });
     },
     writeSnapshot(date, symbols) {
@@ -162,4 +168,37 @@ test('dry-run writes nothing and sends nothing', (t) => {
   assert.equal(row.notified, false, 'dry-run notifies nothing');
   assert.equal(activeHits(fx), 0, 'dry-run writes nothing');
   assert.equal(fx.sinkLog(), '', 'dry-run must not invoke any sink');
+});
+
+// Review #48 🟡 finding #1: an absent sink binary (ENOENT) is 'skipped', not 'failed'. A host with
+// no sinks at all (nothing configured, osascript missing off-Mac) must still commit — otherwise the
+// always-on banner turns every run into a total failure and wedges the state machine forever.
+test('no reachable sink (all absent/unconfigured) still commits — ENOENT is skipped, not failed', (t) => {
+  const fx = fixture(t);
+  let r = fx.run(['alert', 'add', 'panelE', '--sql', "SELECT 'EEE' AS symbol"]);
+  assert.equal(r.status, 0, r.stderr);
+
+  // Telegram/ntfy unconfigured (skipped by env), and PATH has no osascript → banner ENOENT → skipped.
+  r = fx.run(['alert', 'check', '--kind', 'panel', '--json'], { isolate: true });
+  assert.equal(r.status, 0, `an all-absent-sink host must not wedge (exit 0)\n${r.stderr}`);
+  const row = rows(r.stdout).find((x) => x.alert === 'panelE');
+  assert.equal(row.entered, 1);
+  assert.equal(row.delivery, undefined, 'nothing attempted is not a delivery failure');
+  assert.equal(activeHits(fx), 1, 'hit commits when no sink was even attempted');
+});
+
+// Review #48 🟡 finding #2: execFile echoes the full argv, and the Telegram URL carries the bot
+// token — so a failing send must NOT leak the token to stderr (it lands in the launchd log, now on
+// every retry). The redaction must survive into the diagnostic.
+test('a failing Telegram send does not leak the bot token to stderr', (t) => {
+  const fx = fixture(t);
+  let r = fx.run(['alert', 'add', 'panelF', '--sql', "SELECT 'FFF' AS symbol"]);
+  assert.equal(r.status, 0, r.stderr);
+
+  const secret = 'SECRET-TOKEN-9f3a';
+  r = fx.run(['alert', 'check', '--kind', 'panel', '--json'], { telegram: true, tgToken: secret });
+  assert.equal(r.status, 1, r.stderr);   // curl shim fails → total delivery failure
+  assert.ok(/telegram failed/.test(r.stderr), `expected the telegram diagnostic\n${r.stderr}`);
+  assert.ok(!r.stderr.includes(secret), `bot token must not appear in stderr:\n${r.stderr}`);
+  assert.ok(r.stderr.includes('/bot***/'), `token must be redacted to /bot***/\n${r.stderr}`);
 });
