@@ -60,11 +60,17 @@ export function ntfyReq(title, body, topic) {
 }
 
 function macBanner(title, body) {
-  // Escape double-quotes for the AppleScript string literals.
-  const esc = (s) => String(s).replace(/"/g, '\\"');
+  const { cmd, args } = macBannerReq(title, body);
+  return run(cmd, args).catch((e) => process.stderr.write(`# osascript failed: ${e.message}\n`));
+}
+
+// Escape for the AppleScript string literals — backslash FIRST, then quote (as cfgq does), else a
+// backslash before a quote in caller text (`mkt notify --body=…`) closes the literal and injects into
+// the osascript program.
+export function macBannerReq(title, body) {
+  const esc = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const script = `display notification "${esc(body)}" with title "${esc(title)}"`;
-  return run('osascript', ['-e', script]).catch((e) =>
-    process.stderr.write(`# osascript failed: ${e.message}\n`));
+  return { cmd: 'osascript', args: ['-e', script] };
 }
 
 // Shared child-process runner for every sink. `input` is written to the child's stdin — how secrets

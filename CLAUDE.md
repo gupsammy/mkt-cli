@@ -152,7 +152,9 @@ the `--json`/`--compact` paths stay byte-identical; drives the public `printRows
 `notify-redaction` (both notify sinks keep their credential — the Telegram bot token and the ntfy
 topic — off curl's argv by feeding the token-bearing URL through a `--config -` stdin file, and the
 shared runner scrubs every registered secret from a failed child's diagnostic, message and cmd, before
-it reaches a log; also asserts ntfy's Title header is CR/LF-sanitised against header injection).
+it reaches a log; also asserts ntfy sends its body with `--data-raw` so a `@`-leading body can't make
+curl read a local file, ntfy's Title header is CR/LF-sanitised, and the macOS banner escapes
+backslash-before-quote so a body can't break out of the osascript string literal — macOS-only).
 
 `test/size-hints.test.js` asserts the **hint contract** — a command-level error hint must be a
 command line that actually runs, so the suite spawns the real CLI rather than importing `size()`.

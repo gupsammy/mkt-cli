@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { run, telegramReq, ntfyReq } from '../src/notify.js';
+import { execFileSync } from 'node:child_process';
+import { run, telegramReq, ntfyReq, macBannerReq } from '../src/notify.js';
 
 // Issue #17: the Telegram bot token must never reach a process argument list (readable via `ps`) and
 // must never survive into a logged diagnostic. Both guarantees live in src/notify.js, so the tests
@@ -76,6 +77,20 @@ test('ntfyReq sends the body literally — never curl’s file-reading -d', () =
   assert.ok(!args.includes('-d'), 'must not use -d — it reads @-prefixed values as files');
   const raw = args[args.indexOf('--data-raw') + 1];
   assert.equal(raw, body, 'the @-leading body must be passed through verbatim');
+});
+
+test('macBannerReq escapes a backslash-before-quote body — no AppleScript injection', { skip: process.platform !== 'darwin' && 'osascript is macOS-only' }, () => {
+  // esc must escape backslash before quote; otherwise `\"` in caller text (`mkt notify --body=…`)
+  // closes the string literal and the rest is executed as AppleScript. Prove the generated program
+  // compiles and treats the body as inert data by having osascript hand the string right back.
+  const body = String.raw`regex /a\"b/ failed`;
+  const { args } = macBannerReq('mkt-record', body);
+  const script = args[1];
+  // Rewrite `display notification …` to `return …` so osascript echoes the body literal instead of
+  // firing a banner — same string tokens, so it exercises the exact escaping.
+  const probe = script.replace('display notification', 'return').replace(/ with title .*/, '');
+  const out = execFileSync('osascript', ['-e', probe], { encoding: 'utf8' }).trim();
+  assert.equal(out, body, 'body must survive as inert data, not break out of the literal');
 });
 
 test('run redacts a secret carried on argv — from err.message and err.cmd', async () => {
