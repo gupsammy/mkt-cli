@@ -35,7 +35,17 @@ export function printObject(obj, { json, compact } = {}) {
   for (const [k, v] of Object.entries(obj)) process.stdout.write(`${k}: ${fmt(v)}\n`);
 }
 
-const fmt = (v) => v == null ? '' : typeof v === 'number' ? (Number.isInteger(v) ? String(v) : String(Math.round(v * 1e4) / 1e4)) : Array.isArray(v) ? v.join(',') : String(v);
+const fmt = (v) => {
+  if (v == null) return '';
+  if (typeof v !== 'number') return Array.isArray(v) ? v.join(',') : String(v);
+  if (Number.isInteger(v)) return String(v);
+  const rounded = Math.round(v * 1e4) / 1e4;
+  // Never let 4-decimal rounding collapse a non-zero value to 0 (sub-$0.0001 tickers, issue #14):
+  // fall back to significant-figure formatting so the value stays non-zero and readable. (-0 === 0,
+  // so this covers small negatives too.) JSON/compact bypass fmt entirely and keep full precision.
+  if (rounded === 0) return String(Number(v.toPrecision(4)));
+  return String(rounded);
+};
 
 /** Emit a typed error to stderr and return the exit code. */
 export function printError(err, { json } = {}) {

@@ -140,12 +140,23 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Five suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
+Seven suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
 (corrupt-file continuation, retry visibility, partial-success output, offsets, notification
 ownership, and prune safety), `record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
 cases spawn a real child process), `backup-sweep` (backup collects day-old staged tmps from the
-source archive and touches nothing else; end-to-end through the real CLI: ingest → backup), and
+source archive and touches nothing else; end-to-end through the real CLI: ingest → backup),
+`output-fmt` (the human table formatter never renders a non-zero number as `0` — sub-$0.0001 tickers
+kept non-zero via significant figures — while integers, null, arrays, strings, ordinary decimals, and
+the `--json`/`--compact` paths stay byte-identical; drives the public `printRows`/`printObject`), and
+`notify-redaction` (both notify sinks keep their credential — the Telegram bot token and the ntfy
+topic — off curl's argv by feeding the token-bearing URL through a `--config -` stdin file, and the
+shared runner scrubs every registered secret from a failed child's diagnostic, message and cmd, before
+it reaches a log; also asserts ntfy sends its body with `--data-raw` so a `@`-leading body can't make
+curl read a local file, ntfy's Title header is CR/LF-sanitised, and the macOS banner escapes
+backslash-before-quote so a body can't break out of the osascript string literal — the banner-escape
+guard tokenizes the generated AppleScript and runs on every platform; only its real-osascript
+cross-check is macOS-only), and
 `history-parser` (the batched-`~m~<len>~m~` envelope contract for the history WebSocket — the three
 data-integrity bugs of issue #12). It tests the pure, WS-free seam `providers/tradingview.js` now
 exposes (`splitEnvelopes`/`classifyEnvelope`/`createHistoryReader`) against **real captured wire
