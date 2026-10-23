@@ -200,7 +200,8 @@ test('all-absent sink: off-Mac commits (skipped); on-Mac withholds (banner ENOEN
 
 // Review #48 🟡 finding #2: execFile echoes the full argv, and the Telegram URL carries the bot
 // token — so a failing send must NOT leak the token to stderr (it lands in the launchd log, now on
-// every retry). The redaction must survive into the diagnostic.
+// every retry). Since #46 the token never reaches argv at all (curl reads it from a stdin config),
+// so the contract is simply: the secret is absent from the diagnostic.
 test('a failing Telegram send does not leak the bot token to stderr', (t) => {
   const fx = fixture(t);
   let r = fx.run(['alert', 'add', 'panelF', '--sql', "SELECT 'FFF' AS symbol"]);
@@ -211,7 +212,6 @@ test('a failing Telegram send does not leak the bot token to stderr', (t) => {
   assert.equal(r.status, 1, r.stderr);   // curl shim fails → total delivery failure
   assert.ok(/telegram failed/.test(r.stderr), `expected the telegram diagnostic\n${r.stderr}`);
   assert.ok(!r.stderr.includes(secret), `bot token must not appear in stderr:\n${r.stderr}`);
-  assert.ok(r.stderr.includes('/bot***/'), `token must be redacted to /bot***/\n${r.stderr}`);
 });
 
 // Review #48 round 2 🟡: ENOENT→skipped must be opt-in (banner only). A CONFIGURED Telegram sink
