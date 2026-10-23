@@ -35,7 +35,9 @@ Edge-triggered: saved query → run on schedule → push only NEW entrants (diff
 `live` alerts re-run a `screen` filter against the fresh scanner every 15m (market hours); `panel`
 alerts run a SQL query over `mkt.db` once/day after ingest. Sinks: ntfy.sh (`MKT_NTFY_TOPIC`) + macOS
 banner. State lives in the DB. `mkt alert add|list|test|rm|check`. Scheduled via launchd
-(`com.user.mkt-alert`, `com.user.mkt-record`).
+(`com.user.mkt-alert`, `com.user.mkt-record`). An entrant is recorded only when at least one sink
+delivered; if every sink fails, the hit is withheld (`check` reports `delivery: 'failed'` and exits
+1) so the symbol re-fires next run instead of going permanently silent.
 
 ## Filter mini-language (`--where`, AND-combined)
 ```

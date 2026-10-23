@@ -105,7 +105,7 @@ async function check(db, flags) {
   // history is exactly what forward-eval (spec §11) replays. Re-entry inserts a fresh stint.
   const closeHit = db.prepare(`UPDATE alert_hits SET departed=? WHERE alert_id=? AND symbol=? AND departed IS NULL`);
   const summary = [];
-  let errored = 0;
+  let errored = 0, deliveryFailures = 0;
 
   for (const a of alerts) {
     let rows;
@@ -123,27 +123,42 @@ async function check(db, flags) {
     const entered = [...current].filter((s) => !last.has(s));
     const gone = [...last].filter((s) => !current.has(s));
 
+    // Notify BEFORE writing state, so the send outcome can gate the entrant commit (issue #16).
+    let result = null;
     if (entered.length && !dry) {
       const preview = entered.slice(0, 8).join(', ') + (entered.length > 8 ? ` +${entered.length - 8} more` : '');
-      await notify(`mkt: ${a.name}`, `${entered.length} new — ${preview}`);
+      result = await notify(`mkt: ${a.name}`, `${entered.length} new — ${preview}`);
     }
+    const delivered = !!(result && result.delivered > 0);
+    // Total delivery failure: at least one sink was attempted and every one failed. Unconfigured
+    // (skipped) sinks don't count — a banner-only Mac with a working banner is not a failure.
+    const totalFail = !!(result && result.attempted > 0 && result.delivered === 0);
+    if (totalFail) deliveryFailures++;
+
     if (!dry) {
       const ts = now();
+      // Withhold the entrant hits on a total send failure so the symbol is seen as an entrant again
+      // next check and retried — instead of being marked "already notified" and going permanently
+      // silent. Departures ALWAYS close (append-only history, independent of the send outcome), and
+      // both stay in ONE transaction so entrant/departure state can never diverge.
+      const toCommit = totalFail ? [] : entered;
       const tx = db.transaction(() => {
-        for (const s of entered) addHit.run(a.id, s, ts);
+        for (const s of toCommit) addHit.run(a.id, s, ts);
         for (const s of gone) closeHit.run(ts, a.id, s);
       });
       tx();
     }
-    summary.push({ alert: a.name, kind: a.kind, matches: current.size, entered: entered.length, gone: gone.length, notified: dry ? false : entered.length > 0 });
+    const row = { alert: a.name, kind: a.kind, matches: current.size, entered: entered.length, gone: gone.length, notified: delivered };
+    if (totalFail) row.delivery = 'failed';   // hits withheld — will retry next check
+    summary.push(row);
   }
 
-  if (!flags.quiet) process.stderr.write(`# checked=${alerts.length}${dry ? ' (dry-run)' : ''}\n`);
+  if (!flags.quiet) process.stderr.write(`# checked=${alerts.length}${dry ? ' (dry-run)' : ''}${deliveryFailures ? ` delivery_failed=${deliveryFailures}` : ''}\n`);
   for (const s of summary) printRows([s], flags);
-  // A failed alert must not exit 0 forever — the scheduler's log line on a non-zero exit is the
-  // only place a broken query ever surfaces. EXIT.generic = partial success: the healthy alerts
-  // above still ran and notified.
-  return errored ? EXIT.generic : EXIT.ok;
+  // A failed alert must not exit 0 forever — the scheduler's log line on a non-zero exit is the only
+  // place a broken query or a dead sink ever surfaces. EXIT.generic = partial: the healthy alerts
+  // above still ran and notified; a total delivery failure also downgrades to it (hits were withheld).
+  return (errored || deliveryFailures) ? EXIT.generic : EXIT.ok;
 }
 
 function getAlert(db, name) {
