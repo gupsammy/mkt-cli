@@ -108,7 +108,15 @@ only tv's MCP registration + skill wrapper, not the CLI.
   2 sessions on disk as of 2026-08-18). Revisit once there's a meaningful depth of snapshots.
 - Custom-condition alerts → **BUILT** (`mkt alert`, spec §12). Edge-triggered: saved query → run on
   schedule → diff vs active `alert_hits` stints (append-only: departures close a stint, never
-  delete it — the entry/exit history feeds forward-eval) → push only NEW entrants. Two kinds:
+  delete it — the entry/exit history feeds forward-eval) → push only NEW entrants. An entrant's hit
+  is committed **only if ≥1 sink actually delivered** (issue #16): on total delivery failure the
+  entrant is withheld so it re-fires next check — the `check` summary row carries `notified` (a sink
+  took it) and, when withheld, `delivery: 'failed'` + exit 1. Skipped-vs-failed keys on *configured
+  vs not*, not the errno: the banner is a real sink only ON a Mac, so off-Mac an absent `osascript`
+  (ENOENT) is *skipped*, but on a Mac a missing `osascript` (broken launchd PATH) is a *failure*;
+  likewise a configured Telegram/ntfy whose `curl` is missing is a *failure* (a configured sink that
+  can't deliver — else #16 re-opens silently). Departures always close regardless of send outcome.
+  Two kinds:
   `live` (a `screen --where` filter, run against the live scanner every 15m during market hours) and
   `panel` (a SQL query over `mkt.db`, run once/day after ingest). Definitions + state live in
   `mkt.db` (`alerts`, `alert_hits`); both kinds fan out to all three sinks (below).
@@ -140,7 +148,7 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Seven suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
+Eight suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
 (corrupt-file continuation, retry visibility, partial-success output, offsets, notification
 ownership, and prune safety), `record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
@@ -157,6 +165,9 @@ curl read a local file, ntfy's Title header is CR/LF-sanitised, and the macOS ba
 backslash-before-quote so a body can't break out of the osascript string literal — the banner-escape
 guard tokenizes the generated AppleScript and runs on every platform; only its real-osascript
 cross-check is macOS-only), and
+`alert-notify` (issue #16: an alert hit commits only when a sink actually delivered — total send
+failure withholds the entrant so it re-fires, departures still close, dry-run writes nothing; it
+shadows `curl`/`osascript` on PATH to make the sinks deterministic and drives panel alerts offline), and
 `history-parser` (the batched-`~m~<len>~m~` envelope contract for the history WebSocket — the three
 data-integrity bugs of issue #12). It tests the pure, WS-free seam `providers/tradingview.js` now
 exposes (`splitEnvelopes`/`classifyEnvelope`/`createHistoryReader`) against **real captured wire
