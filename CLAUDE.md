@@ -117,7 +117,9 @@ only tv's MCP registration + skill wrapper, not the CLI.
   likewise a configured Telegram/ntfy whose `curl` is missing is a *failure* (a configured sink that
   can't deliver — else #16 re-opens silently). Departures always close regardless of send outcome.
   Two kinds:
-  `live` (a `screen --where` filter, run against the live scanner every 15m during market hours) and
+  `live` (a `screen --where` filter, run against the live scanner every 15m during market hours; a
+  filter matching more than 2,000 symbols is an error for that alert, never diffed — a capped window
+  drifts between runs and re-fires everything at its edge, issue #15) and
   `panel` (a SQL query over `mkt.db`, run once/day after ingest). Definitions + state live in
   `mkt.db` (`alerts`, `alert_hits`); both kinds fan out to all three sinks (below).
   ```
@@ -148,7 +150,7 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Eight suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
+Nine suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
 (corrupt-file continuation, retry visibility, partial-success output, offsets, notification
 ownership, and prune safety), `record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
@@ -167,7 +169,11 @@ guard tokenizes the generated AppleScript and runs on every platform; only its r
 cross-check is macOS-only), and
 `alert-notify` (issue #16: an alert hit commits only when a sink actually delivered — total send
 failure withholds the entrant so it re-fires, departures still close, dry-run writes nothing; it
-shadows `curl`/`osascript` on PATH to make the sinks deterministic and drives panel alerts offline), and
+shadows `curl`/`osascript` on PATH to make the sinks deterministic and drives panel alerts offline),
+`alert-window` (issue #15: a live scan whose window is short of the scanner's total errors that alert
+— no stint opens or closes, nothing is announced, `check` exits 1 while the other alerts still run;
+it preloads `test/helpers/fake-scanner.js` via `node --import` to replace `fetch`, so live alerts run
+offline), and
 `history-parser` (the batched-`~m~<len>~m~` envelope contract for the history WebSocket — the three
 data-integrity bugs of issue #12). It tests the pure, WS-free seam `providers/tradingview.js` now
 exposes (`splitEnvelopes`/`classifyEnvelope`/`createHistoryReader`) against **real captured wire
