@@ -191,7 +191,7 @@ async function currentRows(db, a) {
   // A window short of the scanner's total is a partial set: diffing it would close and re-announce
   // whatever falls outside the slice on every run (issue #15). Refuse it so the check fails loudly.
   if (total > rows.length) {
-    throw new MktError('usage', `Alert "${a.name}" matched ${total} symbols, more than the ${ALERT_MAX} a live alert can track — narrow its --where.`, null);
+    throw new MktError('usage', `Alert "${a.name}" matched ${total} symbols but the scan returned ${rows.length} (live alerts track at most ${ALERT_MAX}) — narrow its --where (mkt alert rm ${a.name}, then add it again).`, null);
   }
   return rows;   // provider returns {symbol, name}
 }
