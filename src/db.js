@@ -142,7 +142,7 @@ const UPSERT_COLS = ['date', 'symbol', 'region', ...WIDE];
 export function snapshotWriter(db, cols = UPSERT_COLS) {
   const cache = new Map();
   return (obj) => {
-    const present = cols.filter((c) => c in obj);
+    const present = cols.filter((c) => Object.hasOwn(obj, c));
     const key = present.join('\0');
     let stmt = cache.get(key);
     if (!stmt) {

@@ -126,6 +126,13 @@ test('#38 fields that differ only in punctuation keep their own values', () => {
   assert.deepEqual(db.prepare(`SELECT "High.1M" a, "High|1M" b FROM snapshots`).get(), { a: 1, b: 2 });
 });
 
+test('a field named after an Object.prototype member counts as absent unless the row has it', () => {
+  const db = memTable(['constructor']);
+  const write = snapshotWriter(db, ['date', 'symbol', 'region', 'constructor']);
+  write({ date: D, symbol: 'X:A', region: 'america' });
+  assert.deepEqual(db.prepare(`SELECT "constructor" c FROM snapshots`).get(), { c: null });
+});
+
 test('#20 a value with no SQL form fails with an error naming the field', () => {
   const db = memTable(['RSI']);
   const write = snapshotWriter(db, ['date', 'symbol', 'region', 'RSI']);
