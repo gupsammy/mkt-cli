@@ -3,6 +3,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import Database from 'better-sqlite3';
 import { WIDE, colType } from './schema.js';
+import { MktError } from './errors.js';
 
 // The canonical, queryable store. Snapshots only — bars stay on-demand (recoverable via the
 // history WS; see spec §9b). Default ~/.mkt/mkt.db, override with $MKT_HOME.
@@ -130,23 +131,37 @@ function migrate(db) {
     FOREIGN KEY (watchlist_id) REFERENCES watchlists(id) ON DELETE CASCADE);`);
 }
 
-// Prepared upsert over (date, symbol, region, ...WIDE). INSERT OR REPLACE keyed on the PK →
-// re-ingesting a day overwrites it (idempotent), matching the recorder's overwrite-a-day semantics.
 const UPSERT_COLS = ['date', 'symbol', 'region', ...WIDE];
 
-export function upsertStmt(db) {
-  const placeholders = UPSERT_COLS.map((n) => '@' + n.replace(/[^A-Za-z0-9_]/g, '_')).join(', ');
-  return db.prepare(
-    `INSERT OR REPLACE INTO snapshots (${UPSERT_COLS.map(qid).join(', ')}) VALUES (${placeholders})`
-  );
+// Returns write(obj): upserts one recorded snapshot row, keyed on (date, symbol). Only the columns
+// PRESENT in obj are written — an absent field keeps its stored value, a field recorded as null
+// overwrites (issue #19: a whole-row replace let a narrow snapshot null ~70 columns). A full-width
+// row still overwrites everything, so re-ingesting a day stays idempotent. Values bind by position,
+// never by a sanitised name, so `High.1M` and `High|1M` can't share a parameter (#38). Statements
+// are cached per present-column set; a day-file normally has one.
+export function snapshotWriter(db, cols = UPSERT_COLS) {
+  const cache = new Map();
+  return (obj) => {
+    const present = cols.filter((c) => c in obj);
+    const key = present.join('\0');
+    let stmt = cache.get(key);
+    if (!stmt) {
+      const set = present.filter((c) => c !== 'date' && c !== 'symbol').map((c) => `${qid(c)}=excluded.${qid(c)}`);
+      stmt = db.prepare(
+        `INSERT INTO snapshots (${present.map(qid).join(', ')}) VALUES (${present.map(() => '?').join(', ')}) ` +
+        `ON CONFLICT(date, symbol) DO ${set.length ? `UPDATE SET ${set.join(', ')}` : 'NOTHING'}`);
+      cache.set(key, stmt);
+    }
+    stmt.run(present.map((c) => bindable(c, obj[c])));
+  };
 }
 
-// Map a recorded NDJSON object to the @-bound param names upsertStmt expects.
-// SQLite named params can't contain '.'/'|', so we sanitize keys the same way upsertStmt does.
-export function rowToParams(obj) {
-  const p = {};
-  for (const f of UPSERT_COLS) {
-    p[f.replace(/[^A-Za-z0-9_]/g, '_')] = obj[f] ?? null;
-  }
-  return p;
+// The driver binds only numbers, strings, bigints, buffers and null; anything else threw on every
+// row, wedging ingest once schema.js gained such a field (issue #20). Booleans → 0/1, arrays and
+// objects → JSON text; a value with no SQL form fails naming its field.
+function bindable(field, v) {
+  if (v === null || typeof v === 'number' || typeof v === 'string' || typeof v === 'bigint' || Buffer.isBuffer(v)) return v;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (typeof v === 'object') return JSON.stringify(v);
+  throw new MktError('bad_column', `Field "${field}" holds a ${typeof v}, which has no SQL form.`, null);
 }

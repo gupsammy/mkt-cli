@@ -50,7 +50,8 @@ a phantom session). Both name `--force` in their hints; it disables both.
 **The panel = SQLite (Phase 2, built).** `mkt ingest` loads the gz snapshots into `~/.mkt/mkt.db`,
 one `snapshots(date, symbol, region, …74 cols)` table, PK `(date,symbol)`, plus two indexes:
 `(symbol,date)` and `(region,date)` — the latter keeps ingest's `MAX(date) WHERE region=?`
-high-water-mark query off a full table scan every night. Idempotent upsert. Incremental by default:
+high-water-mark query off a full table scan every night. Idempotent upsert that writes only the columns a row carries (a narrow
+snapshot never NULLs the rest; a recorded null does overwrite). Incremental by default:
 files ≥ the region's newest ingested date replay (`≥` not `>`, because `record` replaces today's
 file on every run, so today must be re-absorbed), **plus any older archive date missing from the
 DB** — a corrupt day is retried until repaired rather than becoming a permanent silent hole;
@@ -155,7 +156,7 @@ better-sqlite3 included. `package.json` pins `engines: node >=22` — 22 for tho
 semantics, and because `record`'s durability rests on `createWriteStream`'s `flush` option, which
 Node < 20.10 silently ignores (no fsync, no error).
 
-Nine suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
+Ten suites: `size-hints` (the hint contract — see `docs/hint-contract.md`), `ingest-resilience`
 (corrupt-file continuation, retry visibility, partial-success output, offsets, notification
 ownership, and prune safety), `record-staged-write` (record's
 stage→fsync→rename durability: SIGKILL mid-write, concurrent writers, typed error paths — the crash
@@ -178,7 +179,10 @@ shadows `curl`/`osascript` on PATH to make the sinks deterministic and drives pa
 `alert-window` (issue #15: a live scan whose window is short of the scanner's total errors that alert
 — no stint opens or closes, nothing is announced, `check` exits 1 while the other alerts still run;
 it preloads `test/helpers/fake-scanner.js` via `node --import` to replace `fetch`, so live alerts run
-offline), and
+offline),
+`ingest-upsert` (issues #19/#20/#38: a narrow re-ingest keeps the columns it lacks, a full row or an
+explicit null overwrites, re-ingest is idempotent, booleans/arrays land as 0/1 and JSON text, and
+punctuation-twin fields keep separate values), and
 `history-parser` (the batched-`~m~<len>~m~` envelope contract for the history WebSocket — the three
 data-integrity bugs of issue #12). It tests the pure, WS-free seam `providers/tradingview.js` now
 exposes (`splitEnvelopes`/`classifyEnvelope`/`createHistoryReader`) against **real captured wire
