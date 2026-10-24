@@ -75,7 +75,10 @@ backup` mirrors the gz archive + a consistent DB dump (SQLite online-backup API,
 storage (default iCloud `~/Library/Mobile Documents/com~apple~CloudDocs/mkt-backup/`, override `--to`
 or `$MKT_BACKUP_DIR`), keeping the last 7 timestamped DB dumps. The scheduled job does NOT use the
 iCloud default (iCloud filled up): it runs `backup --to ~/.mkt-backup` and moves a dated `.tar.zst` into
-the Google Drive desktop folder — see `~/scripts/CLAUDE.md` § `mkt-record.sh`. Guardrails:
+the Google Drive desktop folder, trashing tarballs older than 7 days so Drive usage stays bounded;
+the next run alerts if the previous tarball never finished syncing. With an explicit `--to`, `backup`
+skips the iCloud check, so reaching Drive is the wrapper's job to verify — see `~/scripts/CLAUDE.md`
+§ `mkt-record.sh`. Guardrails:
 `sql` opens read-only (writes fail at the driver), the DB lives *outside* the git repo (repo ops can't
 touch it), no command deletes panel data.
 
