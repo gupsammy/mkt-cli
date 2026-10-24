@@ -187,6 +187,11 @@ async function currentRows(db, a) {
   const fs = await fieldSet(a.region);
   const { filter, cols } = parseWhere(a.query.split('\n'), fs);
   validateColumns(new Set(['name', ...cols]), fs);
-  const { rows } = await scan({ region: a.region, columns: ['name'], filter, range: [0, ALERT_MAX] });
+  const { total, rows } = await scan({ region: a.region, columns: ['name'], filter, range: [0, ALERT_MAX] });
+  // A window short of the scanner's total is a partial set: diffing it would close and re-announce
+  // whatever falls outside the slice on every run (issue #15). Refuse it so the check fails loudly.
+  if (total > rows.length) {
+    throw new MktError('usage', `Alert "${a.name}" matched ${total} symbols but the scan returned ${rows.length} (live alerts track at most ${ALERT_MAX}) — narrow its --where (mkt alert rm ${a.name}, then add it again).`, null);
+  }
   return rows;   // provider returns {symbol, name}
 }
