@@ -5,6 +5,8 @@
 // WIDE by design (spec §9a): an unused field costs a few MB; an un-recorded field is
 // unrecoverable. Edit freely — adding a field here is picked up by both the recorder and,
 // on next ingest, by db.js (which ALTERs the table to add any missing column).
+// Supported values: numbers and strings are stored as-is, booleans as 0/1, arrays and objects as
+// JSON text; null is NULL. A field missing from a recorded row leaves the stored column untouched.
 export const WIDE = [
   'name', 'description', 'sector', 'industry', 'type', 'market_cap_basic', 'total_shares_outstanding_current', 'float_shares_outstanding',
   'close', 'open', 'high', 'low', 'change', 'change_abs', 'volume', 'average_volume_10d_calc', 'average_volume_90d_calc',

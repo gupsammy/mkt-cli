@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import zlib from 'node:zlib';
 import readline from 'node:readline';
-import { openDb, upsertStmt, rowToParams } from '../db.js';
+import { openDb, snapshotWriter } from '../db.js';
 import { MktError } from '../errors.js';
 import { notify } from '../notify.js';
 import { printObject } from '../output.js';
@@ -14,7 +14,7 @@ const NOTIFY_BODY_MAX = 3500;   // Telegram allows 4096 chars; leave room for ti
 // Load one .ndjson.gz file into the DB inside a single transaction. Returns a result so one bad
 // file cannot abort the caller's loop. Byte offsets refer to the decompressed NDJSON stream.
 // region is stamped here (not in the NDJSON): the archive directory is the authority on it.
-async function ingestFile(file, db, stmt, region) {
+async function ingestFile(file, db, write, region) {
   const rows = [];
   let lineNumber = 0, byteOffset = 0, failedLine = null, failedByte = 0;
   try {
@@ -32,7 +32,7 @@ async function ingestFile(file, db, stmt, region) {
         throw error;
       }
     }
-    const tx = db.transaction((items) => { for (const o of items) stmt.run(rowToParams(o)); });
+    const tx = db.transaction((items) => { for (const o of items) write(o); });
     tx(rows);
     return { ok: true, rows: rows.length };
   } catch (error) {
@@ -72,7 +72,7 @@ async function runIngest({ flags }) {
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.ndjson.gz')).sort();
 
   const db = openDb({ readonly: false });
-  const stmt = upsertStmt(db);
+  const write = snapshotWriter(db);
 
   // High-water mark is per-region. Rows ingested before the region column existed are NULL and
   // don't count — so the first post-migration run replays everything once and stamps them.
@@ -97,7 +97,7 @@ async function runIngest({ flags }) {
   const failures = [];
 
   for (const f of todo) {
-    const result = await ingestFile(path.join(dir, f), db, stmt, region);
+    const result = await ingestFile(path.join(dir, f), db, write, region);
     if (!result.ok) {
       failures.push({ file: f, ...result });
       continue;
