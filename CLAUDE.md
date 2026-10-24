@@ -74,8 +74,8 @@ rebuildable projection (`mkt ingest` reconstructs it). So: **keep every gz forev
 backup` mirrors the gz archive + a consistent DB dump (SQLite online-backup API, WAL-safe) to durable
 storage (default iCloud `~/Library/Mobile Documents/com~apple~CloudDocs/mkt-backup/`, override `--to`
 or `$MKT_BACKUP_DIR`), keeping the last 7 timestamped DB dumps. The scheduled job does NOT use the
-iCloud default (iCloud filled up): it runs `backup --to ~/.mkt-backup` and ships a dated `.tar.zst` to
-Google Drive — see `~/scripts/CLAUDE.md` § `mkt-record.sh`. Guardrails:
+iCloud default (iCloud filled up): it runs `backup --to ~/.mkt-backup` and moves a dated `.tar.zst` into
+the Google Drive desktop folder — see `~/scripts/CLAUDE.md` § `mkt-record.sh`. Guardrails:
 `sql` opens read-only (writes fail at the driver), the DB lives *outside* the git repo (repo ops can't
 touch it), no command deletes panel data.
 
